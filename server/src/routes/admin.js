@@ -8,6 +8,7 @@ const registrationService = require('../services/registrationService');
 const { getIo, getUserRoom } = require('../sockets');
 const { getRequestIp } = require('../utils/requestIp');
 const mfaService = require('../services/mfaService');
+const e2eResetService = require('../services/e2eResetService');
 
 const router = express.Router();
 
@@ -106,6 +107,33 @@ router.post(
   asyncHandler(async (req, res) => {
     await registrationService.rejectRequest({ requestId: req.params.id });
     res.status(204).send();
+  })
+);
+
+router.get(
+  '/e2e/requests',
+  asyncHandler(async (req, res) => {
+    const requests = await e2eResetService.listPendingRequests();
+    res.json({ requests });
+  })
+);
+
+router.post(
+  '/e2e/requests/:id/approve',
+  asyncHandler(async (req, res) => {
+    const { request, user } = await e2eResetService.approveRequest({
+      requestId: req.params.id,
+      adminId: req.user.id,
+    });
+    res.json({ request, user: userService.toUserDto(user) });
+  })
+);
+
+router.post(
+  '/e2e/requests/:id/reject',
+  asyncHandler(async (req, res) => {
+    const request = await e2eResetService.rejectRequest({ requestId: req.params.id });
+    res.json({ request });
   })
 );
 

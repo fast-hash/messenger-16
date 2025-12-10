@@ -38,3 +38,18 @@ export const approveRegistrationRequest = async (requestId) => {
 export const rejectRegistrationRequest = async (requestId) => {
   await httpClient.post(`/api/admin/registration-requests/${requestId}/reject`);
 };
+
+export const listE2EResetRequests = async () => {
+  const { data } = await httpClient.get('/api/admin/e2e/requests');
+  return data;
+};
+
+export const approveE2EResetRequest = async (requestId) => {
+  const { data } = await httpClient.post(`/api/admin/e2e/requests/${requestId}/approve`);
+  return data;
+};
+
+export const rejectE2EResetRequest = async (requestId) => {
+  const { data } = await httpClient.post(`/api/admin/e2e/requests/${requestId}/reject`);
+  return data;
+};

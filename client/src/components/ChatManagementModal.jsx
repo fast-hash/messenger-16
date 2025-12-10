@@ -50,6 +50,10 @@ const ChatManagementModal = ({
   onResetMfa,
   onApproveRequest,
   onRejectRequest,
+  e2eRequests,
+  e2eRequestsLoading,
+  onApproveE2E,
+  onRejectE2E,
   notice,
 }) => {
   const [tab, setTab] = useState('groups');
@@ -88,6 +92,13 @@ const ChatManagementModal = ({
               onClick={() => setTab('requests')}
             >
               Заявки на регистрацию
+            </button>
+            <button
+              type="button"
+              className={`secondary-btn ${tab === 'e2e' ? 'active' : ''}`}
+              onClick={() => setTab('e2e')}
+            >
+              E2E заявки
             </button>
           </div>
           <button type="button" className="secondary-btn" onClick={onClose}>
@@ -238,6 +249,35 @@ const ChatManagementModal = ({
             )}
           </div>
         )}
+
+        {tab === 'e2e' && (
+          <div className="modal-body-scroll">
+            {e2eRequestsLoading && <p className="muted">Загрузка заявок на сброс...</p>}
+            {!e2eRequestsLoading && (
+              <div className="group-list group-list-scroll">
+                {(e2eRequests || []).map((req) => (
+                  <div key={req.id} className="group-card">
+                    <div>
+                      <div className="group-card__title">{req.userId?.displayName || req.userId?.username}</div>
+                      <div className="group-card__meta">{req.userId?.email}</div>
+                      <div className="group-card__meta">Статус: {req.status}</div>
+                      <div className="group-card__meta">Создан: {new Date(req.createdAt).toLocaleString()}</div>
+                    </div>
+                    <div className="btn-row">
+                      <button type="button" className="primary-btn" onClick={() => onApproveE2E && onApproveE2E(req)}>
+                        Одобрить
+                      </button>
+                      <button type="button" className="secondary-btn" onClick={() => onRejectE2E && onRejectE2E(req)}>
+                        Отклонить
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {!e2eRequests?.length && <p className="muted">Новых запросов нет</p>}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -263,6 +303,10 @@ ChatManagementModal.propTypes = {
   onResetMfa: PropTypes.func,
   onApproveRequest: PropTypes.func,
   onRejectRequest: PropTypes.func,
+  e2eRequests: PropTypes.arrayOf(PropTypes.object),
+  e2eRequestsLoading: PropTypes.bool,
+  onApproveE2E: PropTypes.func,
+  onRejectE2E: PropTypes.func,
   notice: PropTypes.string,
 };
 
@@ -284,6 +328,10 @@ ChatManagementModal.defaultProps = {
   onResetMfa: () => {},
   onApproveRequest: () => {},
   onRejectRequest: () => {},
+  e2eRequests: [],
+  e2eRequestsLoading: false,
+  onApproveE2E: () => {},
+  onRejectE2E: () => {},
   notice: '',
 };
 

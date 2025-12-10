@@ -72,6 +72,10 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    e2eIdentityResetAllowed: {
+      type: Boolean,
+      default: false,
+    },
     mfaEnabled: {
       type: Boolean,
       default: false,

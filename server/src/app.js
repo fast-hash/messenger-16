@@ -12,6 +12,7 @@ const e2eRoutes = require('./routes/e2e');
 const usersRoutes = require('./routes/users');
 const adminRoutes = require('./routes/admin');
 const devicesRoutes = require('./routes/devices');
+const securityRoutes = require('./routes/security');
 const errorHandler = require('./middleware/error');
 
 const app = express();
@@ -35,6 +36,7 @@ app.use('/api/e2e', e2eRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/devices', devicesRoutes);
+app.use('/api/security', securityRoutes);
 
 app.use(errorHandler);
 

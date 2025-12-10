@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Layout from '../components/Layout';
 import { setupMfa, enableMfa, disableMfa, fetchBackupCodes } from '../api/authApi';
+import { requestE2EIdentityReset, fetchE2EIdentityReset } from '../api/securityApi';
 import { useAuthStore } from '../store/authStore';
 
 const SecurityPage = () => {
@@ -14,12 +15,19 @@ const SecurityPage = () => {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [resetRequest, setResetRequest] = useState(null);
 
   useEffect(() => {
     if (!user) {
       navigate('/login');
     }
   }, [user, navigate]);
+
+  useEffect(() => {
+    fetchE2EIdentityReset()
+      .then(({ request }) => setResetRequest(request || null))
+      .catch(() => setResetRequest(null));
+  }, []);
 
   const startSetup = async () => {
     setLoading(true);
@@ -93,6 +101,21 @@ const SecurityPage = () => {
     }
   };
 
+  const requestReset = async () => {
+    setLoading(true);
+    setError('');
+    setMessage('');
+    try {
+      const { request } = await requestE2EIdentityReset();
+      setResetRequest(request || null);
+      setMessage('Запрос на сброс E2E отправлен. Дождитесь одобрения администратора.');
+    } catch (err) {
+      setError(err.response?.data?.message || 'Не удалось отправить запрос на сброс E2E');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const header = (
     <div className="header-content">
       <div>
@@ -110,11 +133,11 @@ const SecurityPage = () => {
   return (
     <Layout header={header}>
       <div className="page-container">
-        <div className="card">
-          <div className="card__header">
-            <div>
-              <h3>Статус 2FA</h3>
-              <p className="muted">Дополнительная защита учетной записи через одноразовые коды.</p>
+      <div className="card">
+        <div className="card__header">
+          <div>
+            <h3>Статус 2FA</h3>
+            <p className="muted">Дополнительная защита учетной записи через одноразовые коды.</p>
             </div>
             <div>
               {user?.mfaEnabled ? (
@@ -201,6 +224,35 @@ const SecurityPage = () => {
                 </form>
               </div>
             </div>
+          )}
+        </div>
+      </div>
+
+      <div className="card danger-card">
+        <div className="card__header">
+          <div>
+            <h3>Опасная зона</h3>
+            <p className="muted">
+              Запрос на сброс ключей шифрования. Вы потеряете доступ к старой истории E2E на этом устройстве.
+            </p>
+          </div>
+          <div>
+            {resetRequest?.status === 'pending' && <span className="badge">Запрос отправлен</span>}
+            {resetRequest?.status === 'approved' && <span className="badge badge-success">Одобрено</span>}
+            {resetRequest?.status === 'rejected' && <span className="badge badge-error">Отклонено</span>}
+          </div>
+        </div>
+        <div className="stacked-form">
+          <div className="warning-text">
+            Это действие сбросит вашу текущую E2E-личность. Сообщения, зашифрованные старыми ключами, могут стать
+            недоступными на этом устройстве.
+          </div>
+          {resetRequest?.status === 'pending' ? (
+            <div className="muted">Ожидается подтверждение администратора...</div>
+          ) : (
+            <button type="button" className="danger-btn" onClick={requestReset} disabled={loading}>
+              {loading ? 'Отправляем...' : 'Запросить сброс шифрования'}
+            </button>
           )}
         </div>
       </div>

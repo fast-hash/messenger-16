@@ -619,9 +619,33 @@ const ChatWindow = ({
       return;
     }
 
+    const bannedExtensions = ['.exe', '.dll', '.sh', '.bat', '.cmd'];
+    const allowedMimePrefixes = [
+      'image/',
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats',
+      'text/plain',
+    ];
+    const safeFiles = files.filter((file) => {
+      const ext = (file.name || '').toLowerCase();
+      if (bannedExtensions.some((bad) => ext.endsWith(bad))) {
+        return false;
+      }
+      if (!file.type) return true;
+      return allowedMimePrefixes.some((prefix) => file.type.startsWith(prefix) || file.type === prefix);
+    });
+
+    if (!safeFiles.length) {
+      // eslint-disable-next-line no-alert
+      alert('Файл отклонен: недопустимый тип.');
+      if (event.target) event.target.value = '';
+      return;
+    }
+
     setUploadingAttachments(true);
     try {
-      const { attachments } = await attachmentsApi.uploadAttachments(chatId, files);
+      const { attachments } = await attachmentsApi.uploadAttachments(chatId, safeFiles);
       setPendingAttachments((prev) => [...prev, ...(attachments || [])]);
     } catch (err) {
       const text = err?.response?.data?.message || err?.message || 'Не удалось загрузить вложения';
