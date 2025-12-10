@@ -22,6 +22,12 @@ export const useAuthStore = create((set) => ({
         device: device || null,
       });
 
+      try {
+        await signalManager.init();
+      } catch (error) {
+        console.error('Failed to initialize signal manager', error);
+      }
+
       if (user?.e2eIdentityResetAllowed && !identityResetInFlight) {
         identityResetInFlight = true;
         signalManager
@@ -56,6 +62,11 @@ export const useAuthStore = create((set) => ({
       dndUntil: user.dndUntil || null,
       device: device || null,
     });
+    try {
+      await signalManager.init();
+    } catch (error) {
+      console.error('Failed to initialize signal manager', error);
+    }
     return { user, device };
   },
   async verifyMfaLogin({ tempToken, code }) {
@@ -66,6 +77,11 @@ export const useAuthStore = create((set) => ({
       dndUntil: user.dndUntil || null,
       device: device || null,
     });
+    try {
+      await signalManager.init();
+    } catch (error) {
+      console.error('Failed to initialize signal manager', error);
+    }
     return { user, device };
   },
   async register(payload) {

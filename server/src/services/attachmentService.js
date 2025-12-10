@@ -56,6 +56,7 @@ const saveMetadata = async ({ chatId, uploaderId, files }) => {
       mimeType: file.mimetype,
       size: file.size,
       storageKey: path.join(chatId.toString(), path.basename(file.path)),
+      isEncrypted: !!file.isEncrypted,
     }))
   );
 
@@ -64,6 +65,7 @@ const saveMetadata = async ({ chatId, uploaderId, files }) => {
     originalName: doc.originalName,
     mimeType: doc.mimeType,
     size: doc.size,
+    isEncrypted: doc.isEncrypted,
     status: doc.status,
   }));
 };
