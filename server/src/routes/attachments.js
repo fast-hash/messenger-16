@@ -77,30 +77,34 @@ router.post(
       return res.status(400).json({ message: 'Нет файлов для загрузки' });
     }
 
+    const isE2E = req.body?.isE2E === true || req.body?.isE2E === 'true';
+
     try {
-      // 2. Подключаем библиотеку file-type динамически
-      const { fileTypeFromFile } = await import('file-type');
+      if (!isE2E) {
+        // 2. Подключаем библиотеку file-type динамически
+        const { fileTypeFromFile } = await import('file-type');
 
-      for (const file of req.files) {
-        // 3. Читаем "магические байты" (реальный тип файла)
-        const typeInfo = await fileTypeFromFile(file.path);
-        
-        // Определенный тип или fallback для текстовых файлов
-        let detectedMime = typeInfo ? typeInfo.mime : null;
+        for (const file of req.files) {
+          // 3. Читаем "магические байты" (реальный тип файла)
+          const typeInfo = await fileTypeFromFile(file.path);
 
-        // Исключение для текстовых файлов (у них нет сигнатуры)
-        if (!detectedMime && (file.mimetype === 'text/plain' || path.extname(file.originalname) === '.txt')) {
-           detectedMime = 'text/plain';
-        }
+          // Определенный тип или fallback для текстовых файлов
+          let detectedMime = typeInfo ? typeInfo.mime : null;
 
-        // 4. Главная проверка безопасности
-        if (!detectedMime || !ALLOWED_MIME_TYPES.includes(detectedMime)) {
-          throw new Error(`Файл "${file.originalname}" имеет недопустимый формат (${detectedMime || 'неизвестен'}).`);
-        }
+          // Исключение для текстовых файлов (у них нет сигнатуры)
+          if (!detectedMime && (file.mimetype === 'text/plain' || path.extname(file.originalname) === '.txt')) {
+            detectedMime = 'text/plain';
+          }
 
-        // Дополнительная защита: явно ловим исполняемые файлы (EXE, DLL и т.д.)
-        if (detectedMime === 'application/x-msdownload' || detectedMime === 'application/x-executable') {
+          // 4. Главная проверка безопасности
+          if (!detectedMime || !ALLOWED_MIME_TYPES.includes(detectedMime)) {
+            throw new Error(`Файл "${file.originalname}" имеет недопустимый формат (${detectedMime || 'неизвестен'}).`);
+          }
+
+          // Дополнительная защита: явно ловим исполняемые файлы (EXE, DLL и т.д.)
+          if (detectedMime === 'application/x-msdownload' || detectedMime === 'application/x-executable') {
             throw new Error(`Обнаружен исполняемый файл! Загрузка запрещена.`);
+          }
         }
       }
 
@@ -116,7 +120,7 @@ router.post(
     } catch (error) {
       // 6. Если ошибка — удаляем всё, что успели загрузить в этом запросе
       cleanupFiles(req.files);
-      
+
       console.warn(`Ошибка загрузки файлов (User: ${req.user.id}): ${error.message}`);
       return res.status(400).json({ message: error.message || 'Ошибка проверки файлов' });
     }

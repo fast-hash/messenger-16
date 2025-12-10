@@ -20,6 +20,10 @@ const messageSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    cipherType: {
+      type: Number,
+      default: null,
+    },
     encryption: {
       type: Object,
       default: null,

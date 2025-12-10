@@ -77,6 +77,8 @@ const toMessageDto = (messageDoc, text) => {
     senderId: senderDto.id,
     sender: senderDto,
     text: messageDoc.deletedForAll ? null : text,
+    ciphertext: messageDoc.ciphertext || null,
+    cipherType: messageDoc.cipherType ?? null,
     reactions: (messageDoc.reactions || []).map((reaction) => ({
       emoji: reaction.emoji,
       userId: reaction.userId ? reaction.userId.toString() : null,
@@ -91,14 +93,24 @@ const toMessageDto = (messageDoc, text) => {
   };
 };
 
-const sendMessage = async ({ chatId, senderId, senderRole, text, mentions = [], attachments = [] }) => {
+const sendMessage = async ({
+  chatId,
+  senderId,
+  senderRole,
+  text,
+  ciphertext,
+  cipherType,
+  mentions = [],
+  attachments = [],
+}) => {
   const hasText = typeof text === 'string' && text.trim().length > 0;
+  const hasCiphertext = typeof ciphertext === 'string' && ciphertext.length > 0;
   const attachmentIds = Array.isArray(attachments)
     ? attachments.filter((id) => id && mongoose.Types.ObjectId.isValid(id)).map((id) => id.toString())
     : [];
   const uniqueAttachmentIds = [...new Set(attachmentIds)];
 
-  if (!chatId || !senderId || (!hasText && uniqueAttachmentIds.length === 0)) {
+  if (!chatId || !senderId || (!hasText && !hasCiphertext && uniqueAttachmentIds.length === 0)) {
     const error = new Error('chatId, senderId, and content are required');
     error.status = 400;
     throw error;
@@ -208,11 +220,25 @@ const sendMessage = async ({ chatId, senderId, senderRole, text, mentions = [], 
 
   const participantIds = (chat.participants || []).map((id) => id.toString());
   const filteredMentions = uniqueMentions.filter((id) => participantIds.includes(id));
+  let payload = { ciphertext: null, plaintext: trimmed, encryption: null };
 
-  const { ciphertext, plaintext, encryption } = await cryptoService.encrypt(trimmed, {
-    chatId,
-    senderId,
-  });
+  if (hasCiphertext) {
+    payload = {
+      ciphertext,
+      plaintext: hasText ? trimmed : null,
+      encryption: null,
+    };
+  } else {
+    const cryptoResult = await cryptoService.encrypt(trimmed, {
+      chatId,
+      senderId,
+    });
+    payload = {
+      ciphertext: cryptoResult.ciphertext,
+      plaintext: cryptoResult.plaintext,
+      encryption: cryptoResult.encryption,
+    };
+  }
 
   if (uniqueAttachmentIds.length) {
     const docs = await Attachment.find({ _id: { $in: uniqueAttachmentIds } });
@@ -233,16 +259,18 @@ const sendMessage = async ({ chatId, senderId, senderRole, text, mentions = [], 
   const message = await Message.create({
     chat: chatId,
     sender: senderId,
-    plaintext,
-    ciphertext,
-    encryption,
+    plaintext: payload.plaintext,
+    ciphertext: payload.ciphertext,
+    cipherType: typeof cipherType === 'number' ? cipherType : null,
+    encryption: payload.encryption,
     mentions: filteredMentions,
     attachments: uniqueAttachmentIds,
   });
 
   await message.populate('sender');
 
-  const lastMessageText = trimmed || (uniqueAttachmentIds.length ? 'Вложение' : '');
+  const lastMessageText =
+    trimmed || (hasCiphertext ? '[Encrypted message]' : uniqueAttachmentIds.length ? 'Вложение' : '');
 
   await Chat.findByIdAndUpdate(chatId, {
     lastMessage: {

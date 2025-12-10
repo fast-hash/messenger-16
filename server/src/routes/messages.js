@@ -29,12 +29,14 @@ router.get(
 router.post(
   '/',
   asyncHandler(async (req, res) => {
-    const { chatId, text, mentions, attachments } = req.body || {};
+    const { chatId, text, ciphertext, cipherType, mentions, attachments } = req.body || {};
     const message = await messageService.sendMessage({
       chatId,
       senderId: req.user.id,
       senderRole: req.user.role,
       text,
+      ciphertext,
+      cipherType,
       mentions,
       attachments,
     });
