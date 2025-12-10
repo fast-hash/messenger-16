@@ -112,15 +112,7 @@ const ensureIdentity = async () => {
 
 const getAddress = (userId) => new SignalProtocolAddress((userId || '').toString(), 1);
 
-const prepareSession = async (recipientId) => {
-  const store = getStore();
-  const address = getAddress(recipientId);
-
-  const hasSession = await store.get(`session${address.toString()}`);
-  if (hasSession) return { store, address };
-
-  const { data } = await httpClient.get(`/api/e2e/bundle/${recipientId}`);
-  const bundle = data?.bundle;
+const buildSession = async (store, address, bundle) => {
   if (!bundle) throw new Error('Recipient bundle missing');
 
   const builder = new SessionBuilder(store, address);
@@ -139,6 +131,36 @@ const prepareSession = async (recipientId) => {
         }
       : undefined,
   });
+};
+
+const prepareSession = async (recipientId) => {
+  const store = getStore();
+  const address = getAddress(recipientId);
+
+  const hasSession = await store.get(`session${address.toString()}`);
+  if (hasSession) return { store, address };
+
+  const { data } = await httpClient.get(`/api/e2e/bundle/${recipientId}`);
+  const bundle = data?.bundle;
+
+  await buildSession(store, address, bundle);
+
+  return { store, address };
+};
+
+const forceUpdateSession = async (userId) => {
+  await ensureIdentity();
+  await init();
+
+  const store = getStore();
+  const address = getAddress(userId);
+
+  await store.remove(`session${address.toString()}`);
+
+  const { data } = await httpClient.get(`/api/e2e/bundle/${userId}`);
+  const bundle = data?.bundle;
+
+  await buildSession(store, address, bundle);
 
   return { store, address };
 };
@@ -229,4 +251,5 @@ export default {
   encryptMessage,
   decryptMessage,
   init,
+  forceUpdateSession,
 };
