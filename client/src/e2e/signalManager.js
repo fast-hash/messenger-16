@@ -148,21 +148,19 @@ const prepareSession = async (recipientId) => {
   return { store, address };
 };
 
-const forceUpdateSession = async (userId) => {
-  await ensureIdentity();
-  await init();
-
-  const store = getStore();
-  const address = getAddress(userId);
-
-  await store.remove(`session${address.toString()}`);
-
-  const { data } = await httpClient.get(`/api/e2e/bundle/${userId}`);
-  const bundle = data?.bundle;
-
-  await buildSession(store, address, bundle);
-
-  return { store, address };
+const forceUpdateSession = async (recipientId) => {
+  try {
+    const address = getAddress(recipientId);
+    const store = getStore();
+    // 1. Remove broken session from local store
+    await store.remove(`session${address.toString()}`);
+    // 2. Force fetch new bundle from server
+    await prepareSession(recipientId);
+    console.log('Session forced updated for', recipientId);
+  } catch (e) {
+    console.error('Force update failed:', e);
+    throw e; // Re-throw to handle in UI
+  }
 };
 
 const encryptMessage = async (recipientId, text) => {

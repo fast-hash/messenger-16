@@ -601,51 +601,57 @@ const ChatWindow = ({
       textToSend = JSON.stringify({ type: 'file', files: filesPayload, message: trimmed });
     }
 
-    const attemptSend = async () => {
-      await onSend(textToSend, selectedMentions, attachmentIds);
+    const finalizeSend = () => {
+      setMessageText('');
+      setSelectedMentions([]);
+      setPendingAttachments([]);
+
+      if (typingActive.current && chatId) onTypingStop && onTypingStop(chatId);
+      typingActive.current = false;
+
+      if (typingTimer.current) clearTimeout(typingTimer.current);
     };
 
     try {
-      await attemptSend();
+      await onSend(textToSend, selectedMentions, attachmentIds);
     } catch (err) {
       if (handleRateLimitError(err)) return;
 
-      const shouldRetry = chatType === 'direct' && otherUserId && isSessionError(err);
-      if (shouldRetry) {
+      const errMsg = err?.response?.data?.message || err?.message || '';
+
+      // Check for specific E2E errors
+      const isCryptoError =
+        errMsg.includes('Bundle') ||
+        errMsg.includes('PreKey') ||
+        errMsg.includes('session') ||
+        errMsg.includes('Recipient bundle missing');
+
+      if (isCryptoError && chatType === 'direct' && otherUserId) {
         try {
+          console.log('Encryption error detected. Attempting to heal session...');
+          // 1. Force update keys
           await signalManager.forceUpdateSession(otherUserId);
-          await attemptSend();
+          // 2. Retry sending
+          await onSend(textToSend, selectedMentions, attachmentIds);
+
+          // If successful, clear input and return
+          finalizeSend();
+          return;
         } catch (retryErr) {
-          if (handleRateLimitError(retryErr)) return;
-
-          if (isSessionError(retryErr)) {
-            // eslint-disable-next-line no-alert
-            alert('Ошибка шифрования. Попросите собеседника зайти в сеть, чтобы обновить ключи.');
-            return;
-          }
-
-          const text =
-            retryErr?.response?.data?.message || retryErr?.message || 'Не удалось отправить сообщение';
+          console.error('Retry failed', retryErr);
           // eslint-disable-next-line no-alert
-          alert(text);
+          alert('Ошибка шифрования: Собеседник еще не создал ключи безопасности. Попросите его войти в приложение.');
           return;
         }
-      } else {
-        const text = err?.response?.data?.message || err?.message || 'Не удалось отправить сообщение';
-        // eslint-disable-next-line no-alert
-        alert(text);
-        return;
       }
+
+      // Standard error handling for other errors (Rate limit, network, etc)
+      // eslint-disable-next-line no-alert
+      alert(errMsg || 'Не удалось отправить сообщение');
+      return;
     }
 
-    setMessageText('');
-    setSelectedMentions([]);
-    setPendingAttachments([]);
-
-    if (typingActive.current && chatId) onTypingStop && onTypingStop(chatId);
-    typingActive.current = false;
-
-    if (typingTimer.current) clearTimeout(typingTimer.current);
+    finalizeSend();
   };
 
   const handleDeleteForMe = async (messageId) => {
