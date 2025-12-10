@@ -6,6 +6,7 @@ import { ensureNotificationPermission } from '../utils/notifications';
 import { formatMessageDate } from '../utils/dateUtils';
 import * as attachmentsApi from '../api/attachmentsApi';
 import { decryptFile, encryptFile } from '../e2e/attachmentCrypto';
+import signalManager from '../e2e/signalManager';
 
 const getParticipantId = (p) => {
   if (!p) return null;
@@ -51,6 +52,10 @@ const AttachmentCard = ({ attachment, getAttachmentUrl, formatSize, encryptionIn
     let revokeUrl;
     const loadEncrypted = async () => {
       if (!encryptionInfo) return;
+      if (!encryptionInfo.key || !encryptionInfo.iv) {
+        setDecryptError(true);
+        return;
+      }
       setLoading(true);
       setDecryptError(false);
       try {
@@ -99,7 +104,7 @@ const AttachmentCard = ({ attachment, getAttachmentUrl, formatSize, encryptionIn
         <div className="attachment-card__size muted">{formatSize(attachment.size)}</div>
       </div>
       {decryptError ? (
-        <span className="muted">⚠️ Ошибка расшифровки</span>
+        <span className="muted">🔒 Файл зашифрован</span>
       ) : loading ? (
         <span className="muted">Загрузка...</span>
       ) : (
@@ -529,6 +534,30 @@ const ChatWindow = ({
     }
   };
 
+  const isSessionError = (error) => {
+    const message = error?.response?.data?.message || error?.message || '';
+    return message.includes('Bundle not found') || message.includes('Session invalid');
+  };
+
+  const handleRateLimitError = (error) => {
+    const rateLimited = error?.response?.data?.code === 'RATE_LIMITED';
+    if (!rateLimited) return false;
+
+    const retryAt = error?.response?.data?.retryAt;
+    const retryAfterMs = error?.response?.data?.retryAfterMs;
+    const limit = error?.response?.data?.limit || rateLimitPerMinute || 1;
+
+    const nextDate = retryAt
+      ? new Date(retryAt)
+      : retryAfterMs
+      ? new Date(Date.now() + retryAfterMs)
+      : null;
+
+    if (nextDate) setRateLimitedUntil(nextDate.toISOString());
+    setRateLimitLimit(limit);
+    return true;
+  };
+
   const handleSend = async () => {
     if (!messagingAllowed) {
       if (blockedNoticeText) {
@@ -547,55 +576,66 @@ const ChatWindow = ({
     setUnreadSeparatorMessageId(null);
     setSeparatorCleared(true);
 
-    try {
-      const attachmentIds = pendingAttachments
-        .map((att) => (att?.id || att?._id || '').toString())
+    const attachmentIds = pendingAttachments
+      .map((att) => (att?.id || att?._id || '').toString())
+      .filter(Boolean);
+
+    let textToSend = trimmed;
+
+    if (chatType === 'direct' && attachmentIds.length) {
+      const filesPayload = pendingAttachments
+        .map((att) => {
+          const attId = (att?.id || att?._id || '').toString();
+          if (!attId || !att.encryption) return null;
+          return {
+            id: attId,
+            url: attachmentsApi.getAttachmentUrl(attId),
+            key: att.encryption.key,
+            iv: att.encryption.iv,
+            mimeType: att.encryption.mimeType || att.mimeType,
+            name: att.originalName,
+          };
+        })
         .filter(Boolean);
 
-      let textToSend = trimmed;
+      textToSend = JSON.stringify({ type: 'file', files: filesPayload, message: trimmed });
+    }
 
-      if (chatType === 'direct' && attachmentIds.length) {
-        const filesPayload = pendingAttachments
-          .map((att) => {
-            const attId = (att?.id || att?._id || '').toString();
-            if (!attId || !att.encryption) return null;
-            return {
-              id: attId,
-              url: attachmentsApi.getAttachmentUrl(attId),
-              key: att.encryption.key,
-              iv: att.encryption.iv,
-              mimeType: att.encryption.mimeType || att.mimeType,
-              name: att.originalName,
-            };
-          })
-          .filter(Boolean);
-
-        textToSend = JSON.stringify({ type: 'file', files: filesPayload, message: trimmed });
-      }
-
+    const attemptSend = async () => {
       await onSend(textToSend, selectedMentions, attachmentIds);
+    };
+
+    try {
+      await attemptSend();
     } catch (err) {
-      const rateLimited = err?.response?.data?.code === 'RATE_LIMITED';
-      if (rateLimited) {
-        const retryAt = err?.response?.data?.retryAt;
-        const retryAfterMs = err?.response?.data?.retryAfterMs;
-        const limit = err?.response?.data?.limit || rateLimitPerMinute || 1;
+      if (handleRateLimitError(err)) return;
 
-        const nextDate = retryAt
-          ? new Date(retryAt)
-          : retryAfterMs
-          ? new Date(Date.now() + retryAfterMs)
-          : null;
+      const shouldRetry = chatType === 'direct' && otherUserId && isSessionError(err);
+      if (shouldRetry) {
+        try {
+          await signalManager.forceUpdateSession(otherUserId);
+          await attemptSend();
+        } catch (retryErr) {
+          if (handleRateLimitError(retryErr)) return;
 
-        if (nextDate) setRateLimitedUntil(nextDate.toISOString());
-        setRateLimitLimit(limit);
+          if (isSessionError(retryErr)) {
+            // eslint-disable-next-line no-alert
+            alert('Ошибка шифрования. Попросите собеседника зайти в сеть, чтобы обновить ключи.');
+            return;
+          }
+
+          const text =
+            retryErr?.response?.data?.message || retryErr?.message || 'Не удалось отправить сообщение';
+          // eslint-disable-next-line no-alert
+          alert(text);
+          return;
+        }
+      } else {
+        const text = err?.response?.data?.message || err?.message || 'Не удалось отправить сообщение';
+        // eslint-disable-next-line no-alert
+        alert(text);
         return;
       }
-
-      const text = err?.response?.data?.message || err?.message || 'Не удалось отправить сообщение';
-      // eslint-disable-next-line no-alert
-      alert(text);
-      return;
     }
 
     setMessageText('');
@@ -711,37 +751,103 @@ const ChatWindow = ({
 
     setUploadingAttachments(true);
     try {
-      const filesToUpload = [];
-      const encryptionMeta = [];
+      if (chatType === 'direct') {
+        const encryptedFiles = [];
+        const encryptedMeta = [];
 
-      for (const file of safeFiles) {
-        if (chatType === 'direct') {
+        for (const file of safeFiles) {
           // eslint-disable-next-line no-await-in-loop
           const { blob, key, iv } = await encryptFile(file);
-          filesToUpload.push(new File([blob], file.name, { type: 'application/octet-stream' }));
-          encryptionMeta.push({ key, iv, mimeType: file.type });
-        } else {
-          filesToUpload.push(file);
-          encryptionMeta.push(null);
+          encryptedFiles.push(new File([blob], file.name, { type: 'application/octet-stream' }));
+          encryptedMeta.push({ key, iv, mimeType: file.type, name: file.name });
         }
-      }
 
-      const { attachments } = await attachmentsApi.uploadAttachments(chatId, filesToUpload, {
-        isEncrypted: chatType === 'direct',
-      });
+        const { attachments } = await attachmentsApi.uploadAttachments(chatId, encryptedFiles, {
+          isEncrypted: true,
+        });
 
-      const enriched = (attachments || []).map((att, idx) => ({
-        ...att,
-        mimeType: encryptionMeta[idx]?.mimeType || att.mimeType,
-        encryption: encryptionMeta[idx]
-          ? {
-              ...encryptionMeta[idx],
-              url: attachmentsApi.getAttachmentUrl(att.id || att._id || ''),
+        const payloadFiles = (attachments || []).map((att, idx) => {
+          const attId = (att?.id || att?._id || '').toString();
+          const meta = encryptedMeta[idx];
+
+          return {
+            url: attId ? attachmentsApi.getAttachmentUrl(attId) : null,
+            key: meta?.key,
+            iv: meta?.iv,
+            mimeType: meta?.mimeType,
+            name: meta?.name,
+          };
+        });
+
+        const filePayload = JSON.stringify({
+          type: 'file',
+          files: payloadFiles,
+          message: messageText.trim(),
+        });
+
+        const attachmentIds = (attachments || [])
+          .map((att) => (att?.id || att?._id || '').toString())
+          .filter(Boolean);
+
+        const attemptSend = async () => {
+          await onSend(filePayload, selectedMentions, attachmentIds);
+        };
+
+        try {
+          await attemptSend();
+        } catch (err) {
+          if (handleRateLimitError(err)) return;
+
+          const shouldRetry = otherUserId && isSessionError(err);
+          if (shouldRetry) {
+            try {
+              await signalManager.forceUpdateSession(otherUserId);
+              await attemptSend();
+            } catch (retryErr) {
+              if (handleRateLimitError(retryErr)) return;
+
+              const text =
+                retryErr?.response?.data?.message ||
+                retryErr?.message ||
+                'Ошибка шифрования. Попросите собеседника зайти в сеть, чтобы обновить ключи.';
+              // eslint-disable-next-line no-alert
+              alert(text);
+              return;
             }
-          : null,
-      }));
+          } else {
+            const text =
+              err?.response?.data?.message ||
+              err?.message ||
+              'Ошибка шифрования. Попросите собеседника зайти в сеть, чтобы обновить ключи.';
+            // eslint-disable-next-line no-alert
+            alert(text);
+            return;
+          }
+        }
 
-      setPendingAttachments((prev) => [...prev, ...enriched]);
+        setMessageText('');
+        setPendingAttachments([]);
+      } else {
+        const filesToUpload = safeFiles;
+        const encryptionMeta = filesToUpload.map(() => null);
+
+        const { attachments } = await attachmentsApi.uploadAttachments(chatId, filesToUpload, {
+          isEncrypted: false,
+        });
+
+        const enriched = (attachments || []).map((att, idx) => ({
+          ...att,
+          mimeType: encryptionMeta[idx]?.mimeType || att.mimeType,
+          encryption: encryptionMeta[idx]
+            ? {
+                ...encryptionMeta[idx],
+                url: attachmentsApi.getAttachmentUrl(att.id || att._id || ''),
+              }
+            : null,
+        }));
+
+        setPendingAttachments((prev) => [...prev, ...enriched]);
+      }
     } catch (err) {
       const text = err?.response?.data?.message || err?.message || 'Не удалось загрузить вложения';
       // eslint-disable-next-line no-alert
