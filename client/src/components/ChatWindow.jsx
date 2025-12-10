@@ -5,6 +5,7 @@ import { formatRole } from '../utils/roleLabels';
 import { ensureNotificationPermission } from '../utils/notifications';
 import { formatMessageDate } from '../utils/dateUtils';
 import * as attachmentsApi from '../api/attachmentsApi';
+import { decryptFile, encryptFile } from '../e2e/attachmentCrypto';
 
 const getParticipantId = (p) => {
   if (!p) return null;
@@ -35,21 +36,53 @@ const getMessageId = (m) => m?.id || m?._id || null;
 
 const isImageMime = (mimeType) => typeof mimeType === 'string' && mimeType.startsWith('image/');
 
-const AttachmentCard = ({ attachment, getAttachmentUrl, formatSize }) => {
+const AttachmentCard = ({ attachment, getAttachmentUrl, formatSize, encryptionInfo }) => {
   const [imageError, setImageError] = useState(false);
+  const [resolvedUrl, setResolvedUrl] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [decryptError, setDecryptError] = useState(false);
 
   const attId = (attachment?.id || attachment?._id || '').toString();
   if (!attId) return null;
 
-  const downloadUrl = getAttachmentUrl(attId);
-  const showPreview = isImageMime(attachment?.mimeType) && !imageError;
+  const downloadUrl = encryptionInfo ? encryptionInfo.url || getAttachmentUrl(attId) : getAttachmentUrl(attId);
+
+  useEffect(() => {
+    let revokeUrl;
+    const loadEncrypted = async () => {
+      if (!encryptionInfo) return;
+      setLoading(true);
+      setDecryptError(false);
+      try {
+        const response = await fetch(downloadUrl, { credentials: 'include' });
+        const encryptedBlob = await response.blob();
+        const decryptedBlob = await decryptFile(encryptedBlob, encryptionInfo.key, encryptionInfo.iv);
+        const url = URL.createObjectURL(decryptedBlob);
+        revokeUrl = url;
+        setResolvedUrl(url);
+      } catch (error) {
+        console.error('Failed to decrypt attachment', error);
+        setDecryptError(true);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadEncrypted();
+    return () => {
+      if (revokeUrl) URL.revokeObjectURL(revokeUrl);
+    };
+  }, [downloadUrl, encryptionInfo]);
+
+  const previewSource = encryptionInfo ? resolvedUrl : downloadUrl;
+  const showPreview = isImageMime(encryptionInfo?.mimeType || attachment?.mimeType) && !imageError;
 
   return (
     <div className="attachment-card attachment-card--document">
       <div className="attachment-card__icon" aria-hidden>
         {showPreview ? (
           <img
-            src={downloadUrl}
+            src={previewSource}
             alt={attachment.originalName || 'Вложение'}
             className="attachment-card__image"
             onError={() => setImageError(true)}
@@ -65,10 +98,15 @@ const AttachmentCard = ({ attachment, getAttachmentUrl, formatSize }) => {
         <div className="attachment-card__name">{attachment.originalName || 'Файл'}</div>
         <div className="attachment-card__size muted">{formatSize(attachment.size)}</div>
       </div>
-
-      <a className="link-btn" href={downloadUrl} target="_blank" rel="noreferrer" title="Открыть">
-        Открыть
-      </a>
+      {decryptError ? (
+        <span className="muted">⚠️ Ошибка расшифровки</span>
+      ) : loading ? (
+        <span className="muted">Загрузка...</span>
+      ) : (
+        <a className="link-btn" href={previewSource || downloadUrl} target="_blank" rel="noreferrer" title="Открыть">
+          Открыть
+        </a>
+      )}
     </div>
   );
 };
@@ -83,10 +121,17 @@ AttachmentCard.propTypes = {
   }),
   getAttachmentUrl: PropTypes.func.isRequired,
   formatSize: PropTypes.func.isRequired,
+  encryptionInfo: PropTypes.shape({
+    key: PropTypes.string,
+    iv: PropTypes.string,
+    mimeType: PropTypes.string,
+    url: PropTypes.string,
+  }),
 };
 
 AttachmentCard.defaultProps = {
   attachment: null,
+  encryptionInfo: null,
 };
 
 const ChatWindow = ({
@@ -507,7 +552,28 @@ const ChatWindow = ({
         .map((att) => (att?.id || att?._id || '').toString())
         .filter(Boolean);
 
-      await onSend(trimmed, selectedMentions, attachmentIds);
+      let textToSend = trimmed;
+
+      if (chatType === 'direct' && attachmentIds.length) {
+        const filesPayload = pendingAttachments
+          .map((att) => {
+            const attId = (att?.id || att?._id || '').toString();
+            if (!attId || !att.encryption) return null;
+            return {
+              id: attId,
+              url: attachmentsApi.getAttachmentUrl(attId),
+              key: att.encryption.key,
+              iv: att.encryption.iv,
+              mimeType: att.encryption.mimeType || att.mimeType,
+              name: att.originalName,
+            };
+          })
+          .filter(Boolean);
+
+        textToSend = JSON.stringify({ type: 'file', files: filesPayload, message: trimmed });
+      }
+
+      await onSend(textToSend, selectedMentions, attachmentIds);
     } catch (err) {
       const rateLimited = err?.response?.data?.code === 'RATE_LIMITED';
       if (rateLimited) {
@@ -645,8 +711,37 @@ const ChatWindow = ({
 
     setUploadingAttachments(true);
     try {
-      const { attachments } = await attachmentsApi.uploadAttachments(chatId, safeFiles);
-      setPendingAttachments((prev) => [...prev, ...(attachments || [])]);
+      const filesToUpload = [];
+      const encryptionMeta = [];
+
+      for (const file of safeFiles) {
+        if (chatType === 'direct') {
+          // eslint-disable-next-line no-await-in-loop
+          const { blob, key, iv } = await encryptFile(file);
+          filesToUpload.push(new File([blob], file.name, { type: 'application/octet-stream' }));
+          encryptionMeta.push({ key, iv, mimeType: file.type });
+        } else {
+          filesToUpload.push(file);
+          encryptionMeta.push(null);
+        }
+      }
+
+      const { attachments } = await attachmentsApi.uploadAttachments(chatId, filesToUpload, {
+        isEncrypted: chatType === 'direct',
+      });
+
+      const enriched = (attachments || []).map((att, idx) => ({
+        ...att,
+        mimeType: encryptionMeta[idx]?.mimeType || att.mimeType,
+        encryption: encryptionMeta[idx]
+          ? {
+              ...encryptionMeta[idx],
+              url: attachmentsApi.getAttachmentUrl(att.id || att._id || ''),
+            }
+          : null,
+      }));
+
+      setPendingAttachments((prev) => [...prev, ...enriched]);
     } catch (err) {
       const text = err?.response?.data?.message || err?.message || 'Не удалось загрузить вложения';
       // eslint-disable-next-line no-alert
@@ -965,7 +1060,14 @@ const ChatWindow = ({
 
           const isMentioned = (message.mentions || []).some((id) => (id?.toString?.() || id) === currentId);
           const attachments = message.attachments || [];
+          const attachmentSecrets = new Map(
+            (message.attachmentKeys || []).map((entry) => [(entry.id || '').toString(), entry])
+          );
           const isDeletedForAll = !!message.deletedForAll;
+
+          const displayedText = message.decryptionError
+            ? '⚠️ Decryption Error'
+            : message.text || (attachments.length ? 'Вложение' : '');
 
           const msgTime = new Date(message.createdAt).getTime();
           const isTimeValid = !Number.isNaN(msgTime) && Date.now() - msgTime < 10 * 60 * 1000;
@@ -994,26 +1096,27 @@ const ChatWindow = ({
                   </div>
 
                   <div className={`message-text ${isDeletedForAll ? 'message-text--deleted' : ''}`}>
-                    {isDeletedForAll
-                      ? 'Сообщение удалено'
-                      : message.text || (attachments.length ? 'Вложение' : '')}
+                    {isDeletedForAll ? 'Сообщение удалено' : displayedText}
                   </div>
 
                   {!isDeletedForAll && attachments.length > 0 && (
                     <div className="message-attachments">
                       {attachments.map((att, index) => {
                         const attId = (att.id || att._id || index || '').toString();
+                        const encryptionInfo = attachmentSecrets.get(attId) || null;
+                        const mimeType = encryptionInfo?.mimeType || att.mimeType;
                         return (
                           <AttachmentCard
                             key={attId}
-                            attachment={att}
+                            attachment={{ ...att, mimeType }}
                             getAttachmentUrl={getAttachmentUrl}
                             formatSize={formatSize}
+                            encryptionInfo={encryptionInfo}
                           />
                         );
                       })}
-                    </div>
-                  )}
+                  </div>
+                )}
 
                   {!isDeletedForAll && canReact && (
                     <div className="message-reactions">

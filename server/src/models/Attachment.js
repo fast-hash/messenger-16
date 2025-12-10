@@ -9,6 +9,7 @@ const attachmentSchema = new mongoose.Schema(
     mimeType: { type: String, required: true },
     size: { type: Number, required: true },
     storageKey: { type: String, required: true },
+    isEncrypted: { type: Boolean, default: false },
     status: { type: String, enum: ['uploaded', 'linked'], default: 'uploaded' },
     expiresAt: { type: Date, default: () => new Date(Date.now() + 24 * 60 * 60 * 1000) },
     createdAt: { type: Date, default: Date.now },

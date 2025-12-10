@@ -77,11 +77,22 @@ router.post(
       return res.status(400).json({ message: 'Нет файлов для загрузки' });
     }
 
+    const isEncrypted = req.body?.isEncrypted === 'true' || req.body?.isEncrypted === true;
+
     try {
       // 2. Подключаем библиотеку file-type динамически
       const { fileTypeFromFile } = await import('file-type');
 
       for (const file of req.files) {
+        // Помечаем файлы, чтобы сохранить флаг в БД
+        // eslint-disable-next-line no-param-reassign
+        file.isEncrypted = isEncrypted;
+
+        if (isEncrypted) {
+          // Для зашифрованных вложений не валидируем содержимое
+          continue;
+        }
+
         // 3. Читаем "магические байты" (реальный тип файла)
         const typeInfo = await fileTypeFromFile(file.path);
 

@@ -3,6 +3,7 @@ import { io } from 'socket.io-client';
 import * as chatApi from '../api/chatApi';
 import * as messagesApi from '../api/messagesApi';
 import { playIncomingSound, showBrowserNotification } from '../utils/notifications';
+import signalManager from '../e2e/signalManager';
 
 const mapChat = (chat, currentUserId) => {
   const normalizeId = (value) => {
@@ -46,6 +47,77 @@ const mapChat = (chat, currentUserId) => {
     otherUser: normalizedOtherUser,
     isOnline: false,
   };
+};
+
+const normalizeParticipantId = (value) => {
+  if (!value) return null;
+  if (value.$oid) return value.$oid;
+  if (value._id?.$oid) return value._id.$oid;
+  if (value.id) return normalizeParticipantId(value.id);
+  if (value._id) return normalizeParticipantId(value._id);
+  const raw = value.id || value._id || value;
+  if (!raw) return null;
+  if (raw.$oid) return raw.$oid;
+  if (typeof raw === 'string') return raw;
+  if (typeof raw?.toString === 'function') {
+    const str = raw.toString();
+    if (str && str !== '[object Object]') return str;
+  }
+  return null;
+};
+
+const parseAttachmentPayload = (text) => {
+  try {
+    const parsed = JSON.parse(text || '');
+    if (!parsed || parsed.type !== 'file') return null;
+
+    const files = Array.isArray(parsed.files) ? parsed.files : [parsed];
+    return {
+      message: parsed.message || '',
+      files: files.map((file) => ({
+        id: file.id || file.attachmentId || normalizeParticipantId(file.attachmentId) || null,
+        url: file.url,
+        key: file.key,
+        iv: file.iv,
+        mimeType: file.mimeType,
+        name: file.name,
+      })),
+    };
+  } catch (error) {
+    return null;
+  }
+};
+
+const enrichDecryptedMessage = (message, text) => {
+  const payload = parseAttachmentPayload(text);
+  if (!payload) {
+    return { ...message, text };
+  }
+
+  const attachmentKeys = (payload.files || []).filter((file) => file.id && file.key && file.iv);
+  return {
+    ...message,
+    text: payload.message || text || '',
+    attachmentKeys,
+  };
+};
+
+const decryptMessageText = async (message) => {
+  if (!message?.ciphertext) return message;
+  const senderId =
+    normalizeParticipantId(message.senderId) ||
+    normalizeParticipantId(message.sender?._id || message.sender?.id || message.sender);
+  if (!senderId) {
+    return { ...message, text: '⚠️ Decryption Error', decryptionError: true };
+  }
+
+  try {
+    const text = await signalManager.decryptMessage(senderId, message.ciphertext, message.cipherType);
+    return { ...enrichDecryptedMessage(message, text), decryptionError: false };
+  } catch (error) {
+    console.error('Failed to decrypt message', error);
+    return { ...message, text: '⚠️ Decryption Error', decryptionError: true };
+  }
 };
 
 export const useChatStore = create((set, get) => ({
@@ -123,7 +195,7 @@ export const useChatStore = create((set, get) => ({
       rejoinAllChats();
     }
 
-    socket.on('message:new', ({ message }) => {
+    socket.on('message:new', async ({ message }) => {
       const state = get();
       const chatState = state.chats.find((c) => c.id === message.chatId);
       const participantIds = (chatState?.participants || []).map((p) => (p.id || p._id || p).toString());
@@ -143,8 +215,10 @@ export const useChatStore = create((set, get) => ({
         return;
       }
 
-      state.addMessage(message.chatId, message);
-      state.updateChatLastMessage(message.chatId, message);
+      const decrypted = await decryptMessageText(message);
+
+      state.addMessage(message.chatId, decrypted);
+      state.updateChatLastMessage(message.chatId, decrypted);
       const isOwn = message.senderId === currentUserId;
       const isCurrent = state.selectedChatId === message.chatId;
       if (isCurrent && !isOwn) {
@@ -303,10 +377,11 @@ export const useChatStore = create((set, get) => ({
   },
   async loadMessages(chatId) {
     const { messages, lastReadAt } = await messagesApi.getMessages(chatId);
+    const decryptedMessages = await Promise.all((messages || []).map((msg) => decryptMessageText(msg)));
     set((state) => ({
       messages: {
         ...state.messages,
-        [chatId]: messages,
+        [chatId]: decryptedMessages,
       },
       messageMeta: {
         ...state.messageMeta,
@@ -367,6 +442,28 @@ export const useChatStore = create((set, get) => ({
   },
   async sendMessage(chatId, text, mentions = [], attachments = []) {
     const socket = get().socket;
+    const chat = get().chats.find((c) => c.id === chatId);
+    const isDirect = chat?.type === 'direct';
+    const currentId = normalizeParticipantId(get().socket?.user?.id);
+    const fallbackParticipant = (chat?.participants || []).find((p) => normalizeParticipantId(p) !== currentId);
+    const otherUserId = isDirect
+      ? normalizeParticipantId(chat?.otherUser?.id || chat?.otherUser?._id || fallbackParticipant)
+      : null;
+
+    let payload = { chatId, text, mentions, attachments };
+
+    if (isDirect && otherUserId) {
+      const encrypted = await signalManager.encryptMessage(otherUserId, text || '');
+      payload = {
+        chatId,
+        ciphertext: encrypted.ciphertext,
+        cipherType: encrypted.cipherType,
+        mentions,
+        attachments,
+        isE2E: true,
+      };
+    }
+
     const applyLocalMessage = (message) => {
       get().addMessage(chatId, message);
       // Update read time immediately so the UI doesn't show "Unread" line above my own message
@@ -375,7 +472,7 @@ export const useChatStore = create((set, get) => ({
     };
     if (socket) {
       await new Promise((resolve, reject) => {
-        socket.emit('message:send', { chatId, text, mentions, attachments }, (response) => {
+        socket.emit('message:send', payload, (response) => {
           if (!response || response.ok) {
             resolve();
           } else {
@@ -387,22 +484,25 @@ export const useChatStore = create((set, get) => ({
       });
       return;
     }
-    const { message } = await messagesApi.sendMessage({ chatId, text, mentions, attachments });
+    const { message } = await messagesApi.sendMessage(payload);
     applyLocalMessage(message);
   },
   addMessage(chatId, message) {
-    set((state) => {
-      const chatMessages = state.messages[chatId] || [];
-      if (chatMessages.some((existing) => existing.id === message.id)) {
-        return state;
-      }
-      return {
-        messages: {
-          ...state.messages,
-          [chatId]: [...chatMessages, message],
-        },
-      };
-    });
+    (async () => {
+      const prepared = await decryptMessageText(message);
+      set((state) => {
+        const chatMessages = state.messages[chatId] || [];
+        if (chatMessages.some((existing) => existing.id === prepared.id)) {
+          return state;
+        }
+        return {
+          messages: {
+            ...state.messages,
+            [chatId]: [...chatMessages, prepared],
+          },
+        };
+      });
+    })();
   },
   setChatBlocks(chatId, blocks) {
     set((state) => ({
