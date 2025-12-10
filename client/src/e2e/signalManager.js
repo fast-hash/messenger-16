@@ -9,7 +9,6 @@ import httpClient from '../api/httpClient';
 
 const storage = localforage.createInstance({ name: 'signal-storage' });
 
-// --- Helpers ---
 const base64ToArrayBuffer = (b64) => {
   try {
     const binary = atob(b64);
@@ -19,7 +18,7 @@ const base64ToArrayBuffer = (b64) => {
     }
     return bytes.buffer;
   } catch (error) {
-    console.error('Signal: Failed to decode base64', error);
+    console.error('Failed to decode base64', error);
     return null;
   }
 };
@@ -39,16 +38,15 @@ const serializeKeyPair = (keyPair) => ({
 });
 
 const deserializeKeyPair = (keyPair) => {
-  if (!keyPair || !keyPair.publicKey || !keyPair.privateKey) {
-     throw new Error('Invalid keypair object');
-  }
   const pubKey = base64ToArrayBuffer(keyPair.publicKey);
   const privKey = base64ToArrayBuffer(keyPair.privateKey);
-  if (!pubKey || !privKey) throw new Error('Failed to deserialize keypair');
+
+  if (!pubKey || !privKey) {
+    throw new Error('Invalid keypair data');
+  }
+
   return { pubKey, privKey };
 };
-
-// --- Core ---
 
 const generateOneTimePreKeys = async (count = 10, startId = 1) => {
   const keys = [];
@@ -62,7 +60,11 @@ const generateOneTimePreKeys = async (count = 10, startId = 1) => {
 };
 
 const publishBundle = async ({ registrationId, identityKeyPair, signedPreKey, oneTimePreKeys }) => {
-  const signedPreKeyPublicKey = signedPreKey.keyPair?.publicKey || signedPreKey.publicKey;
+  // Проверяем формат ключа (объект или прямой ключ) для совместимости
+  const signedPreKeyPublicKey = signedPreKey.keyPair
+    ? signedPreKey.keyPair.publicKey
+    : signedPreKey.publicKey;
+
   const identityKeyBuffer = identityKeyPair.publicKey || identityKeyPair;
 
   const payload = {
@@ -76,22 +78,10 @@ const publishBundle = async ({ registrationId, identityKeyPair, signedPreKey, on
     oneTimePreKeys,
   };
 
-  try {
-    await httpClient.post('/api/e2e/bundle', payload);
-    console.log('Signal: Bundle published successfully');
-  } catch (error) {
-    // Игнорируем ошибку 403 (ключи уже есть), это нормально
-    if (error.response && error.response.status === 403) {
-       console.log('Signal: Bundle already exists on server (Sync OK)');
-    } else {
-       console.error('Signal: Failed to publish bundle', error);
-       throw error;
-    }
-  }
+  await httpClient.post('/api/e2e/bundle', payload);
 };
 
 const resetIdentity = async () => {
-  console.log('Signal: Resetting identity...');
   await storage.clear();
 
   const registrationId = await KeyHelper.generateRegistrationId();
@@ -119,23 +109,18 @@ const getStore = () => ({
 
 const ensureIdentity = async () => {
   const registrationId = await storage.getItem('registrationId');
-  if (!registrationId) {
+  const identityKey = await storage.getItem('identityKey');
+  const signedPreKey = await storage.getItem('signedPreKey');
+
+  if (!registrationId || !identityKey || !signedPreKey) {
     await resetIdentity();
   }
 };
 
 const getAddress = (userId) => new SignalProtocolAddress((userId || '').toString(), 1);
 
-const prepareSession = async (recipientId) => {
-  const store = getStore();
-  const address = getAddress(recipientId);
-
-  const hasSession = await store.get(`session${address.toString()}`);
-  if (hasSession) return { store, address };
-
-  const { data } = await httpClient.get(`/api/e2e/bundle/${recipientId}`);
-  const bundle = data?.bundle;
-  if (!bundle) throw new Error(`Recipient bundle missing for ${recipientId}`);
+const buildSession = async (store, address, bundle) => {
+  if (!bundle) throw new Error('Recipient bundle missing');
 
   const builder = new SessionBuilder(store, address);
   await builder.processPreKey({
@@ -153,85 +138,46 @@ const prepareSession = async (recipientId) => {
         }
       : undefined,
   });
-  console.log(`Signal: Session established with ${recipientId}`);
+};
+
+const prepareSession = async (recipientId) => {
+  const store = getStore();
+  const address = getAddress(recipientId);
+
+  const hasSession = await store.get(`session${address.toString()}`);
+  if (hasSession) return { store, address };
+
+  const { data } = await httpClient.get(`/api/e2e/bundle/${recipientId}`);
+  const bundle = data?.bundle;
+
+  await buildSession(store, address, bundle);
+
   return { store, address };
 };
 
-// --- Public Methods ---
-
+// Функция для сброса сломанной сессии и загрузки новых ключей
 const forceUpdateSession = async (recipientId) => {
   try {
     const address = getAddress(recipientId);
     const store = getStore();
-    console.log('Signal: Force updating session for', recipientId);
+    console.log('Force updating session for', recipientId);
+    // 1. Удаляем локальную сессию
     await store.remove(`session${address.toString()}`);
+    // 2. Запрашиваем новые ключи с сервера
     await prepareSession(recipientId);
   } catch (e) {
-    console.error('Signal: Force update failed', e);
+    console.error('Force update failed:', e);
     throw e;
   }
 };
 
-let initPromise = null;
-
-const init = async () => {
-  // Singleton pattern: предотвращаем двойной запуск
-  if (initPromise) return initPromise;
-  
-  initPromise = (async () => {
-    try {
-      const identity = await storage.getItem('identityKey');
-      const signedPreKey = await storage.getItem('signedPreKey');
-      const registrationId = await storage.getItem('registrationId');
-
-      if (!identity || !signedPreKey || !registrationId) {
-        await resetIdentity();
-        return;
-      }
-
-      // Load into memory (libsignal requirement)
-      const store = getStore();
-      const deserializedIdentity = deserializeKeyPair(identity);
-      const signedPubKey = base64ToArrayBuffer(signedPreKey.keyPair.publicKey);
-      const signedPrivKey = base64ToArrayBuffer(signedPreKey.keyPair.privateKey);
-      const signature = base64ToArrayBuffer(signedPreKey.signature);
-
-      await store.put('identityKey', deserializedIdentity);
-      await store.put('registrationId', registrationId);
-      await store.put(`signedKey${signedPreKey.keyId}`, {
-        pubKey: signedPubKey,
-        privKey: signedPrivKey,
-        signature,
-      });
-      
-      // Auto-Heal: Всегда отправляем ключи на сервер при старте,
-      // чтобы восстановиться после очистки базы.
-      await publishBundle({
-          registrationId,
-          identityKeyPair: { publicKey: base64ToArrayBuffer(identity.publicKey) }, 
-          signedPreKey: {
-              keyId: signedPreKey.keyId,
-              publicKey: signedPubKey,
-              signature: signature
-          },
-          oneTimePreKeys: (await storage.getItem('oneTimePreKeys')) || []
-      });
-
-    } catch (error) {
-      console.error('Signal: Init failed, performing hard reset...', error);
-      initPromise = null; // reset lock
-      await resetIdentity();
-    }
-  })();
-  
-  return initPromise;
-};
-
 const encryptMessage = async (recipientId, text) => {
-  await init(); // Ensure initialized
+  await ensureIdentity();
+  await init();
   const { store, address } = await prepareSession(recipientId);
   const cipher = new SessionCipher(store, address);
   const result = await cipher.encrypt(new TextEncoder().encode(text));
+
   return {
     ciphertext: bufferToBase64(result.body),
     cipherType: result.type,
@@ -239,19 +185,91 @@ const encryptMessage = async (recipientId, text) => {
 };
 
 const decryptMessage = async (senderId, ciphertext, cipherType) => {
-  await init(); // Ensure initialized
+  await ensureIdentity();
+  await init();
   const store = getStore();
   const address = getAddress(senderId);
   const cipher = new SessionCipher(store, address);
   const body = base64ToArrayBuffer(ciphertext);
-  
-  let decrypted;
-  if (cipherType === 3) {
-      decrypted = await cipher.decryptPreKeyWhisperMessage(body, 'binary');
-  } else {
-      decrypted = await cipher.decryptWhisperMessage(body, 'binary');
+  if (!body) {
+    throw new Error('Invalid ciphertext payload');
   }
+
+  const decrypted =
+    cipherType === 3
+      ? await cipher.decryptPreKeyWhisperMessage(body, 'binary')
+      : await cipher.decryptWhisperMessage(body, 'binary');
+
   return new TextDecoder().decode(decrypted);
+};
+
+const init = async () => {
+  // 1. Загружаем ключи
+  const identity = await storage.getItem('identityKey');
+  const signedPreKey = await storage.getItem('signedPreKey');
+  const oneTimePreKeys = (await storage.getItem('oneTimePreKeys')) || [];
+  const registrationId = await storage.getItem('registrationId');
+
+  // 2. Если ключей нет - создаем
+  if (!identity || !signedPreKey || !registrationId) {
+    console.log('E2E: No local identity. Generating new...');
+    await resetIdentity();
+    return;
+  }
+
+  // 3. Если есть - загружаем в память
+  try {
+    const store = getStore();
+    const deserializedIdentity = deserializeKeyPair(identity);
+    const signedPubKey = base64ToArrayBuffer(signedPreKey.keyPair.publicKey);
+    const signedPrivKey = base64ToArrayBuffer(signedPreKey.keyPair.privateKey);
+    const signature = base64ToArrayBuffer(signedPreKey.signature);
+
+    if (!signedPubKey || !signedPrivKey || !signature) {
+      throw new Error('Invalid signed pre-key data');
+    }
+
+    await store.put('identityKey', deserializedIdentity);
+    await store.put('registrationId', registrationId);
+    await store.put(`signedKey${signedPreKey.keyId}`, {
+      pubKey: signedPubKey,
+      privKey: signedPrivKey,
+      signature,
+    });
+
+    await Promise.all(
+      oneTimePreKeys.map((pk) => {
+        const pubKey = base64ToArrayBuffer(pk.publicKey);
+        if (!pubKey) throw new Error('Invalid one-time pre-key');
+        return store.put(`preKey${pk.keyId}`, {
+          pubKey,
+          privKey: null,
+        });
+      })
+    );
+
+    // 4. ГЛАВНОЕ: Всегда отправляем ключи на сервер при старте.
+    // Это чинит проблему, когда базу очистили, а клиент "помнит" ключи.
+    console.log('E2E: Verifying/Updating server bundle...');
+    await publishBundle({
+        registrationId,
+        identityKeyPair: { publicKey: base64ToArrayBuffer(identity.publicKey) },
+        signedPreKey: {
+            keyId: signedPreKey.keyId,
+            publicKey: signedPubKey,
+            signature: signature
+        },
+        oneTimePreKeys: oneTimePreKeys 
+    });
+    console.log('E2E: Bundle synced with server successfully.');
+
+  } catch (error) {
+    console.warn('Signal init/sync failed. Data corrupted? Resetting identity...', error);
+    // Если локальные данные битые - сбрасываем
+    if (error.message && (error.message.includes('base64') || error.message.includes('Invalid') || error.message.includes('keypair'))) {
+       await resetIdentity();
+    }
+  }
 };
 
 export default {
