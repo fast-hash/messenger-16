@@ -60,12 +60,16 @@ const generateOneTimePreKeys = async (count = 10, startId = 1) => {
 };
 
 const publishBundle = async ({ registrationId, identityKeyPair, signedPreKey, oneTimePreKeys }) => {
+  const signedPreKeyPublicKey = signedPreKey.keyPair
+    ? signedPreKey.keyPair.publicKey
+    : signedPreKey.publicKey;
+
   const payload = {
     registrationId,
     identityKey: bufferToBase64(identityKeyPair.publicKey),
     signedPreKey: {
       keyId: signedPreKey.keyId,
-      publicKey: bufferToBase64(signedPreKey.keyPair.publicKey),
+      publicKey: bufferToBase64(signedPreKeyPublicKey),
       signature: bufferToBase64(signedPreKey.signature),
     },
     oneTimePreKeys,
@@ -196,41 +200,25 @@ const decryptMessage = async (senderId, ciphertext, cipherType) => {
 };
 
 const init = async () => {
-  await ensureIdentity();
-
+  // 1. Load from local store
   const identity = await storage.getItem('identityKey');
   const signedPreKey = await storage.getItem('signedPreKey');
-  const oneTimePreKeys = (await storage.getItem('oneTimePreKeys')) || [];
   const registrationId = await storage.getItem('registrationId');
 
+  // 2. If completely missing, generate fresh
   if (!identity || !signedPreKey || !registrationId) {
+    console.log('E2E: No local identity. Generating new...');
     await resetIdentity();
     return;
   }
 
+  // 3. Load into memory (Signal Protocol requirement)
   try {
     const store = getStore();
     const deserializedIdentity = deserializeKeyPair(identity);
     const signedPubKey = base64ToArrayBuffer(signedPreKey.keyPair.publicKey);
     const signedPrivKey = base64ToArrayBuffer(signedPreKey.keyPair.privateKey);
     const signature = base64ToArrayBuffer(signedPreKey.signature);
-
-    if (!signedPubKey || !signedPrivKey || !signature) {
-      throw new Error('Invalid signed pre-key data');
-    }
-
-    const publishIdentity = {
-      publicKey: deserializedIdentity.pubKey,
-      privateKey: deserializedIdentity.privKey,
-    };
-    const publishSignedPreKey = {
-      keyId: signedPreKey.keyId,
-      keyPair: {
-        publicKey: signedPubKey,
-        privateKey: signedPrivKey,
-      },
-      signature,
-    };
 
     await store.put('identityKey', deserializedIdentity);
     await store.put('registrationId', registrationId);
@@ -240,26 +228,38 @@ const init = async () => {
       signature,
     });
 
+    // Load OneTimePreKeys if available
+    const oneTimePreKeys = (await storage.getItem('oneTimePreKeys')) || [];
     await Promise.all(
-      oneTimePreKeys.map((pk) => {
-        const pubKey = base64ToArrayBuffer(pk.publicKey);
-        if (!pubKey) throw new Error('Invalid one-time pre-key');
-        return store.put(`preKey${pk.keyId}`, {
-          pubKey,
-          privKey: null,
-        });
-      })
+       oneTimePreKeys.map((pk) => {
+         const pubKey = base64ToArrayBuffer(pk.publicKey);
+         return store.put(`preKey${pk.keyId}`, { pubKey, privKey: null });
+       })
     );
+    
+    console.log('E2E: Local keys loaded into memory.');
 
+    // 4. CRITICAL: FORCE RE-PUBLISH TO SERVER (Self-Healing)
+    // This ensures server DB is always in sync, even after a wipe.
+    console.log('E2E: Verifying/Updating server bundle...');
     await publishBundle({
-      registrationId,
-      identityKeyPair: publishIdentity,
-      signedPreKey: publishSignedPreKey,
-      oneTimePreKeys,
+        registrationId,
+        identityKeyPair: { publicKey: base64ToArrayBuffer(identity.publicKey) }, // hack to reuse publishBundle signature
+        signedPreKey: {
+            keyId: signedPreKey.keyId,
+            publicKey: base64ToArrayBuffer(signedPreKey.keyPair.publicKey),
+            signature: base64ToArrayBuffer(signedPreKey.signature)
+        },
+        oneTimePreKeys: oneTimePreKeys // Send existing OTPKs to restore server state
     });
+    console.log('E2E: Bundle synced with server successfully.');
+
   } catch (error) {
-    console.warn('Signal init failed, resetting identity', error);
-    await resetIdentity();
+    console.error('E2E: Init/Sync failed. If data is corrupted, resetting identity...', error);
+    // If local data is corrupt (e.g. atob fails), nuke it and start over.
+    if (error.message.includes('base64') || error.message.includes('Invalid')) {
+         await resetIdentity();
+    }
   }
 };
 
