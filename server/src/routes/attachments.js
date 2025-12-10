@@ -77,34 +77,40 @@ router.post(
       return res.status(400).json({ message: 'Нет файлов для загрузки' });
     }
 
-    const isE2E = req.body?.isE2E === true || req.body?.isE2E === 'true';
-
     try {
-      if (!isE2E) {
-        // 2. Подключаем библиотеку file-type динамически
-        const { fileTypeFromFile } = await import('file-type');
+      // 2. Подключаем библиотеку file-type динамически
+      const { fileTypeFromFile } = await import('file-type');
 
-        for (const file of req.files) {
-          // 3. Читаем "магические байты" (реальный тип файла)
-          const typeInfo = await fileTypeFromFile(file.path);
+      for (const file of req.files) {
+        // 3. Читаем "магические байты" (реальный тип файла)
+        const typeInfo = await fileTypeFromFile(file.path);
 
-          // Определенный тип или fallback для текстовых файлов
-          let detectedMime = typeInfo ? typeInfo.mime : null;
+        // Определенный тип или fallback для текстовых файлов
+        let detectedMime = typeInfo ? typeInfo.mime : null;
 
-          // Исключение для текстовых файлов (у них нет сигнатуры)
-          if (!detectedMime && (file.mimetype === 'text/plain' || path.extname(file.originalname) === '.txt')) {
-            detectedMime = 'text/plain';
-          }
+        // Исключение для текстовых файлов (у них нет сигнатуры)
+        if (!detectedMime && (file.mimetype === 'text/plain' || path.extname(file.originalname) === '.txt')) {
+          detectedMime = 'text/plain';
+        }
 
-          // 4. Главная проверка безопасности
-          if (!detectedMime || !ALLOWED_MIME_TYPES.includes(detectedMime)) {
-            throw new Error(`Файл "${file.originalname}" имеет недопустимый формат (${detectedMime || 'неизвестен'}).`);
-          }
+        // 4. Главная проверка безопасности
+        if (!detectedMime || !ALLOWED_MIME_TYPES.includes(detectedMime)) {
+          throw new Error(`Файл "${file.originalname}" имеет недопустимый формат (${detectedMime || 'неизвестен'}).`);
+        }
 
-          // Дополнительная защита: явно ловим исполняемые файлы (EXE, DLL и т.д.)
-          if (detectedMime === 'application/x-msdownload' || detectedMime === 'application/x-executable') {
-            throw new Error(`Обнаружен исполняемый файл! Загрузка запрещена.`);
-          }
+        // Дополнительная защита: явно ловим исполняемые файлы (EXE, DLL, SH и т.д.)
+        const lowerExt = path.extname(file.originalname || '').toLowerCase();
+        const bannedExt = ['.exe', '.dll', '.sh', '.bat', '.cmd'];
+        const bannedMimes = [
+          'application/x-msdownload',
+          'application/x-executable',
+          'application/x-msdos-program',
+          'application/x-sh',
+          'text/x-shellscript',
+        ];
+
+        if (bannedExt.includes(lowerExt) || bannedMimes.includes(detectedMime)) {
+          throw new Error(`Обнаружен потенциально опасный файл! Загрузка запрещена.`);
         }
       }
 

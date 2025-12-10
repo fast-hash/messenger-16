@@ -3,6 +3,9 @@ const authMiddleware = require('../middleware/auth');
 const requireTrustedDevice = require('../middleware/requireTrustedDevice');
 const asyncHandler = require('../utils/asyncHandler');
 const E2EPublicBundle = require('../models/E2EPublicBundle');
+const User = require('../models/User');
+const { logEvent } = require('../services/auditLogService');
+const { getRequestIp } = require('../utils/requestIp');
 
 const router = express.Router();
 
@@ -18,6 +21,17 @@ router.post(
       return res.status(400).json({ message: 'registrationId, identityKey and signedPreKey are required' });
     }
 
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(401).json({ message: 'User not found' });
+    }
+
+    const existingBundle = await E2EPublicBundle.findOne({ userId: req.user.id });
+
+    if (existingBundle && user.e2eIdentityResetAllowed === false) {
+      return res.status(403).json({ message: 'Identity rotation is not allowed' });
+    }
+
     const bundle = await E2EPublicBundle.findOneAndUpdate(
       { userId: req.user.id },
       {
@@ -29,6 +43,18 @@ router.post(
       },
       { new: true, upsert: true, setDefaultsOnInsert: true }
     );
+
+    if (user.e2eIdentityResetAllowed) {
+      user.e2eIdentityResetAllowed = false;
+      await user.save();
+
+      await logEvent({
+        actorId: req.user.id,
+        event: 'e2e_identity_rotated',
+        ip: getRequestIp(req) || null,
+        deviceInfo: { bundleId: bundle._id.toString() },
+      });
+    }
 
     res.status(201).json({ bundle });
   })

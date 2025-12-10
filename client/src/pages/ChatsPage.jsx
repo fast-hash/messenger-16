@@ -33,6 +33,9 @@ import {
   listRegistrationRequests,
   approveRegistrationRequest,
   rejectRegistrationRequest,
+  listE2EResetRequests,
+  approveE2EResetRequest,
+  rejectE2EResetRequest,
 } from '../api/adminApi';
 
 const ChatsPage = () => {
@@ -86,6 +89,8 @@ const ChatsPage = () => {
   const [adminUsersLoading, setAdminUsersLoading] = useState(false);
   const [registrationRequests, setRegistrationRequests] = useState([]);
   const [registrationLoading, setRegistrationLoading] = useState(false);
+  const [e2eRequests, setE2eRequests] = useState([]);
+  const [e2eLoading, setE2eLoading] = useState(false);
   const [managementNotice, setManagementNotice] = useState('');
 
 // 1. Исправленный useEffect (вставьте это вместо сломанного блока)
@@ -223,6 +228,18 @@ const ChatsPage = () => {
       setRegistrationRequests([]);
     } finally {
       setRegistrationLoading(false);
+    }
+  };
+
+  const loadE2eRequests = async () => {
+    setE2eLoading(true);
+    try {
+      const { requests } = await listE2EResetRequests();
+      setE2eRequests(requests || []);
+    } catch (error) {
+      setE2eRequests([]);
+    } finally {
+      setE2eLoading(false);
     }
   };
 
@@ -414,6 +431,35 @@ const ChatsPage = () => {
     });
   };
 
+  const handleApproveE2eRequest = (request) => {
+    const name = request.userId?.displayName || request.userId?.username || request.userId?.email || 'пользователь';
+    openConfirm(`Одобрить сброс ключей для ${name}?`, async () => {
+      try {
+        await approveE2EResetRequest(request.id);
+        await loadE2eRequests();
+        await loadAdminUsers();
+        setManagementNotice(`Сброс E2E для ${name} одобрен`);
+      } catch (error) {
+        // eslint-disable-next-line no-alert
+        alert('Не удалось одобрить запрос');
+      }
+    });
+  };
+
+  const handleRejectE2eRequest = (request) => {
+    const name = request.userId?.displayName || request.userId?.username || request.userId?.email || 'пользователь';
+    openConfirm(`Отклонить запрос на сброс для ${name}?`, async () => {
+      try {
+        await rejectE2EResetRequest(request.id);
+        await loadE2eRequests();
+        setManagementNotice(`Сброс E2E для ${name} отклонен`);
+      } catch (error) {
+        // eslint-disable-next-line no-alert
+        alert('Не удалось отклонить запрос');
+      }
+    });
+  };
+
   const openManagementModal = async () => {
     setShowManagement(true);
     setManagementNotice('');
@@ -421,6 +467,7 @@ const ChatsPage = () => {
     loadDirectChatsAdminList();
     loadAdminUsers();
     loadRegistrationRequestsList();
+    loadE2eRequests();
   };
 
   const handleAdminClearBlocks = async (chatId) => {
@@ -674,12 +721,16 @@ const ChatsPage = () => {
         adminUsersLoading={adminUsersLoading}
         registrationRequests={registrationRequests}
         registrationLoading={registrationLoading}
+        e2eRequests={e2eRequests}
+        e2eRequestsLoading={e2eLoading}
         onDisableUser={handleDisableUserAdmin}
         onEnableUser={handleEnableUserAdmin}
         onAllowNextDevice={handleResetDeviceTrust}
         onResetMfa={handleResetMfa}
         onApproveRequest={handleApproveRegistration}
         onRejectRequest={handleRejectRegistration}
+        onApproveE2E={handleApproveE2eRequest}
+        onRejectE2E={handleRejectE2eRequest}
         notice={managementNotice}
       />
 

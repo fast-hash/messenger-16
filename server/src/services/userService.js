@@ -24,6 +24,7 @@ const toUserDto = (userDoc) => ({
   accessDisabledBy: userDoc.accessDisabledBy ? userDoc.accessDisabledBy.toString() : null,
   tokenVersion: userDoc.tokenVersion || 0,
   forceTrustNextDevice: userDoc.forceTrustNextDevice || false,
+  e2eIdentityResetAllowed: userDoc.e2eIdentityResetAllowed || false,
   mfaEnabled: userDoc.mfaEnabled || false,
 });
 
