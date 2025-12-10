@@ -11,6 +11,7 @@ export const useAuthStore = create((set) => ({
   dndEnabled: false,
   dndUntil: null,
   device: null,
+  e2eDisabled: false,
   async fetchCurrentUser() {
     try {
       const { user, device } = await usersApi.currentUser();
@@ -20,12 +21,14 @@ export const useAuthStore = create((set) => ({
         dndEnabled: user.dndEnabled || false,
         dndUntil: user.dndUntil || null,
         device: device || null,
+        e2eDisabled: false,
       });
 
       try {
         await signalManager.init();
       } catch (error) {
         console.error('Failed to initialize signal manager', error);
+        set({ e2eDisabled: true });
       }
 
       if (user?.e2eIdentityResetAllowed && !identityResetInFlight) {
@@ -61,11 +64,13 @@ export const useAuthStore = create((set) => ({
       dndEnabled: user.dndEnabled || false,
       dndUntil: user.dndUntil || null,
       device: device || null,
+      e2eDisabled: false,
     });
     try {
       await signalManager.init();
     } catch (error) {
       console.error('Failed to initialize signal manager', error);
+      set({ e2eDisabled: true });
     }
     return { user, device };
   },
@@ -76,11 +81,13 @@ export const useAuthStore = create((set) => ({
       dndEnabled: user.dndEnabled || false,
       dndUntil: user.dndUntil || null,
       device: device || null,
+      e2eDisabled: false,
     });
     try {
       await signalManager.init();
     } catch (error) {
       console.error('Failed to initialize signal manager', error);
+      set({ e2eDisabled: true });
     }
     return { user, device };
   },
@@ -94,7 +101,7 @@ export const useAuthStore = create((set) => ({
     } catch (e) {
       // ignore logout errors (e.g., expired session)
     }
-    set({ user: null, dndEnabled: false, dndUntil: null, device: null });
+    set({ user: null, dndEnabled: false, dndUntil: null, device: null, e2eDisabled: false });
   },
   async updatePreferences(preferences) {
     const { user } = await usersApi.updatePreferences(preferences);

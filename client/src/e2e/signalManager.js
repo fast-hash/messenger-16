@@ -219,6 +219,19 @@ const init = async () => {
       throw new Error('Invalid signed pre-key data');
     }
 
+    const publishIdentity = {
+      publicKey: deserializedIdentity.pubKey,
+      privateKey: deserializedIdentity.privKey,
+    };
+    const publishSignedPreKey = {
+      keyId: signedPreKey.keyId,
+      keyPair: {
+        publicKey: signedPubKey,
+        privateKey: signedPrivKey,
+      },
+      signature,
+    };
+
     await store.put('identityKey', deserializedIdentity);
     await store.put('registrationId', registrationId);
     await store.put(`signedKey${signedPreKey.keyId}`, {
@@ -237,6 +250,13 @@ const init = async () => {
         });
       })
     );
+
+    await publishBundle({
+      registrationId,
+      identityKeyPair: publishIdentity,
+      signedPreKey: publishSignedPreKey,
+      oneTimePreKeys,
+    });
   } catch (error) {
     console.warn('Signal init failed, resetting identity', error);
     await resetIdentity();

@@ -618,18 +618,24 @@ const ChatWindow = ({
       if (handleRateLimitError(err)) return;
 
       const errMsg = err?.response?.data?.message || err?.message || '';
+      const isIdentityMismatch =
+        errMsg.includes('Identity key mismatch') || errMsg.includes('No session');
 
       // Check for specific E2E errors
       const isCryptoError =
         errMsg.includes('Bundle') ||
         errMsg.includes('PreKey') ||
         errMsg.includes('session') ||
-        errMsg.includes('Recipient bundle missing');
+        errMsg.includes('Recipient bundle missing') ||
+        isIdentityMismatch;
 
       if (isCryptoError && chatType === 'direct' && otherUserId) {
         try {
           console.log('Encryption error detected. Attempting to heal session...');
-          // 1. Force update keys
+          // 1. Force update keys (including broken identity/session states)
+          if (isIdentityMismatch) {
+            console.warn('Identity mismatch detected. Forcing session refresh.');
+          }
           await signalManager.forceUpdateSession(otherUserId);
           // 2. Retry sending
           await onSend(textToSend, selectedMentions, attachmentIds);
@@ -638,9 +644,10 @@ const ChatWindow = ({
           finalizeSend();
           return;
         } catch (retryErr) {
+          if (handleRateLimitError(retryErr)) return;
           console.error('Retry failed', retryErr);
           // eslint-disable-next-line no-alert
-          alert('Ошибка шифрования: Собеседник еще не создал ключи безопасности. Попросите его войти в приложение.');
+          alert('Не удалось зашифровать. Сервер не имеет ключей получателя (он должен войти в сеть).');
           return;
         }
       }
