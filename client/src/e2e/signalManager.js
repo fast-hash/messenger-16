@@ -10,12 +10,17 @@ import httpClient from '../api/httpClient';
 const storage = localforage.createInstance({ name: 'signal-storage' });
 
 const base64ToArrayBuffer = (b64) => {
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.charCodeAt(i);
+  try {
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes.buffer;
+  } catch (error) {
+    console.error('Failed to decode base64', error);
+    return null;
   }
-  return bytes.buffer;
 };
 
 const bufferToBase64 = (buf) => {
@@ -32,10 +37,16 @@ const serializeKeyPair = (keyPair) => ({
   privateKey: bufferToBase64(keyPair.privateKey),
 });
 
-const deserializeKeyPair = (keyPair) => ({
-  pubKey: base64ToArrayBuffer(keyPair.publicKey),
-  privKey: base64ToArrayBuffer(keyPair.privateKey),
-});
+const deserializeKeyPair = (keyPair) => {
+  const pubKey = base64ToArrayBuffer(keyPair.publicKey);
+  const privKey = base64ToArrayBuffer(keyPair.privateKey);
+
+  if (!pubKey || !privKey) {
+    throw new Error('Invalid keypair data');
+  }
+
+  return { pubKey, privKey };
+};
 
 const generateOneTimePreKeys = async (count = 10, startId = 1) => {
   const keys = [];
@@ -152,6 +163,9 @@ const decryptMessage = async (senderId, ciphertext, cipherType) => {
   const address = getAddress(senderId);
   const cipher = new SessionCipher(store, address);
   const body = base64ToArrayBuffer(ciphertext);
+  if (!body) {
+    throw new Error('Invalid ciphertext payload');
+  }
 
   const decrypted =
     cipherType === 3
@@ -174,23 +188,39 @@ const init = async () => {
     return;
   }
 
-  const store = getStore();
-  await store.put('identityKey', deserializeKeyPair(identity));
-  await store.put('registrationId', registrationId);
-  await store.put(`signedKey${signedPreKey.keyId}`, {
-    pubKey: base64ToArrayBuffer(signedPreKey.keyPair.publicKey),
-    privKey: base64ToArrayBuffer(signedPreKey.keyPair.privateKey),
-    signature: base64ToArrayBuffer(signedPreKey.signature),
-  });
+  try {
+    const store = getStore();
+    const deserializedIdentity = deserializeKeyPair(identity);
+    const signedPubKey = base64ToArrayBuffer(signedPreKey.keyPair.publicKey);
+    const signedPrivKey = base64ToArrayBuffer(signedPreKey.keyPair.privateKey);
+    const signature = base64ToArrayBuffer(signedPreKey.signature);
 
-  await Promise.all(
-    oneTimePreKeys.map((pk) =>
-      store.put(`preKey${pk.keyId}`, {
-        pubKey: base64ToArrayBuffer(pk.publicKey),
-        privKey: null,
+    if (!signedPubKey || !signedPrivKey || !signature) {
+      throw new Error('Invalid signed pre-key data');
+    }
+
+    await store.put('identityKey', deserializedIdentity);
+    await store.put('registrationId', registrationId);
+    await store.put(`signedKey${signedPreKey.keyId}`, {
+      pubKey: signedPubKey,
+      privKey: signedPrivKey,
+      signature,
+    });
+
+    await Promise.all(
+      oneTimePreKeys.map((pk) => {
+        const pubKey = base64ToArrayBuffer(pk.publicKey);
+        if (!pubKey) throw new Error('Invalid one-time pre-key');
+        return store.put(`preKey${pk.keyId}`, {
+          pubKey,
+          privKey: null,
+        });
       })
-    )
-  );
+    );
+  } catch (error) {
+    console.warn('Signal init failed, resetting identity', error);
+    await resetIdentity();
+  }
 };
 
 export default {
