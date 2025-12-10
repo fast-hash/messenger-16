@@ -646,8 +646,19 @@ const ChatWindow = ({
         } catch (retryErr) {
           if (handleRateLimitError(retryErr)) return;
           console.error('Retry failed', retryErr);
-          // eslint-disable-next-line no-alert
-          alert('Не удалось зашифровать. Сервер не имеет ключей получателя (он должен войти в сеть).');
+          const retryErrMsg = retryErr?.response?.data?.message || retryErr?.message || '';
+
+          if (retryErrMsg.includes('Bundle not found')) {
+            // eslint-disable-next-line no-alert
+            alert(
+              'Ошибка шифрования: Сервер не знает ключей этого пользователя. Попросите его обновить страницу или перезайти в приложение.'
+            );
+          } else {
+            // eslint-disable-next-line no-alert
+            alert(
+              'Не удалось зашифровать. Сервер не имеет ключей получателя (он должен войти в сеть).'
+            );
+          }
           return;
         }
       }
