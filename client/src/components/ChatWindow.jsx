@@ -1245,8 +1245,8 @@ const ChatWindow = ({
                           />
                         );
                       })}
-                  </div>
-                )}
+                    </div>
+                  )}
 
                   {!isDeletedForAll && canReact && (
                     <div className="message-reactions">
