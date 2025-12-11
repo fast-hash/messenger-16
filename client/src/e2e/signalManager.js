@@ -11,12 +11,43 @@ const storage = localforage.createInstance({ name: 'signal-storage' });
 
 // --- Helpers ---
 
+// Универсальная функция конвертации в Base64
+// Поддерживает ArrayBuffer, Uint8Array и обычные массивы
+const bufferToBase64 = (buf) => {
+  if (!buf) return '';
+  
+  let bytes;
+  if (buf instanceof Uint8Array) {
+    bytes = buf;
+  } else if (buf instanceof ArrayBuffer) {
+    bytes = new Uint8Array(buf);
+  } else if (Array.isArray(buf)) {
+    bytes = new Uint8Array(buf);
+  } else {
+    // Попытка обработать Node.js Buffer или похожие структуры
+    try {
+      bytes = new Uint8Array(buf);
+    } catch (e) {
+      console.warn('Signal: Failed to convert buffer to Uint8Array', buf);
+      return '';
+    }
+  }
+
+  // Избегаем переполнения стека при больших массивах
+  let binary = '';
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+};
+
 const base64ToArrayBuffer = (b64) => {
   if (!b64) return new ArrayBuffer(0);
   try {
     const binary = atob(b64);
     const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i += 1) {
+    for (let i = 0; i < binary.length; i++) {
       bytes[i] = binary.charCodeAt(i);
     }
     return bytes.buffer;
@@ -26,19 +57,22 @@ const base64ToArrayBuffer = (b64) => {
   }
 };
 
-const bufferToBase64 = (buf) => {
-  if (!buf) return '';
-  const bytes = new Uint8Array(buf);
-  let binary = '';
-  bytes.forEach((b) => {
-    binary += String.fromCharCode(b);
-  });
-  return btoa(binary);
+// Безопасное извлечение буфера ключа из разных структур
+const getPublicKeyBuffer = (keyPair) => {
+  if (!keyPair) return null;
+  if (keyPair instanceof ArrayBuffer || keyPair instanceof Uint8Array) return keyPair;
+  return keyPair.pubKey || keyPair.publicKey || keyPair.public;
+};
+
+const getPrivateKeyBuffer = (keyPair) => {
+  if (!keyPair) return null;
+  if (keyPair instanceof ArrayBuffer || keyPair instanceof Uint8Array) return keyPair;
+  return keyPair.privKey || keyPair.privateKey || keyPair.private;
 };
 
 const serializeKeyPair = (keyPair) => ({
-  publicKey: bufferToBase64(keyPair.publicKey),
-  privateKey: bufferToBase64(keyPair.privateKey),
+  publicKey: bufferToBase64(getPublicKeyBuffer(keyPair)),
+  privateKey: bufferToBase64(getPrivateKeyBuffer(keyPair)),
 });
 
 const deserializeKeyPair = (keyPair) => {
@@ -54,11 +88,11 @@ const deserializeKeyPair = (keyPair) => {
 
 const generateOneTimePreKeys = async (count = 10, startId = 1) => {
   const keys = [];
-  for (let i = 0; i < count; i += 1) {
+  for (let i = 0; i < count; i++) {
     const preKeyId = startId + i;
     // eslint-disable-next-line no-await-in-loop
     const preKey = await KeyHelper.generatePreKey(preKeyId);
-    keys.push({ keyId: preKeyId, publicKey: bufferToBase64(preKey.keyPair.publicKey) });
+    keys.push({ keyId: preKeyId, publicKey: bufferToBase64(getPublicKeyBuffer(preKey.keyPair)) });
   }
   return keys;
 };
@@ -66,42 +100,46 @@ const generateOneTimePreKeys = async (count = 10, startId = 1) => {
 // --- Core Logic ---
 
 const publishBundle = async ({ registrationId, identityKeyPair, signedPreKey, oneTimePreKeys }) => {
-  // 1. Подготовка данных
-  // Извлекаем публичные ключи, поддерживая и сырые объекты KeyHelper, и наши структуры
+  // 1. Извлечение ключей с максимальной осторожностью
   const signedPreKeyPublicKey = signedPreKey.keyPair
-    ? signedPreKey.keyPair.publicKey
+    ? getPublicKeyBuffer(signedPreKey.keyPair)
     : signedPreKey.publicKey;
 
-  const identityKeyBuffer = identityKeyPair.publicKey || identityKeyPair;
+  const identityKeyBuffer = getPublicKeyBuffer(identityKeyPair);
+  const signatureBuffer = signedPreKey.signature;
 
-  // 2. Валидация перед отправкой (чтобы избежать 400 Bad Request)
+  // 2. Конвертация
   const identityKeyB64 = bufferToBase64(identityKeyBuffer);
   const signedPreKeyB64 = bufferToBase64(signedPreKeyPublicKey);
-  const signatureB64 = bufferToBase64(signedPreKey.signature);
+  const signatureB64 = bufferToBase64(signatureBuffer);
 
-  // ПРОВЕРКА: Если данных нет, не отправляем запрос, чтобы не получить 400
+  // 3. Строгая валидация с детальным логом
   if (!registrationId || !identityKeyB64 || !signedPreKeyB64 || !signatureB64) {
-    console.error('E2E: Aborting publish. Missing keys:', {
-      hasRegId: !!registrationId,
-      hasIdentity: !!identityKeyB64,
-      hasSignedKey: !!signedPreKeyB64,
-      hasSignature: !!signatureB64
-    });
+    const debugInfo = JSON.stringify({
+      registrationId: registrationId,
+      identityKey: !!identityKeyB64 ? 'OK' : 'MISSING',
+      signedPreKey: !!signedPreKeyB64 ? 'OK' : 'MISSING',
+      signature: !!signatureB64 ? 'OK' : 'MISSING',
+      // Сырые данные для отладки, если что-то пойдет не так
+      rawIdentityType: identityKeyPair ? identityKeyPair.constructor.name : 'null',
+    }, null, 2);
+    
+    console.error('E2E: Aborting publish. Invalid keys detected:\n', debugInfo);
     throw new Error('Attempted to publish invalid/empty keys');
   }
 
   const payload = {
-    registrationId: Number(registrationId), // <--- ФИКС: Явное приведение к числу
+    registrationId: Number(registrationId),
     identityKey: identityKeyB64,
     signedPreKey: {
-      keyId: Number(signedPreKey.keyId), // <--- ФИКС: Явное приведение к числу
+      keyId: Number(signedPreKey.keyId),
       publicKey: signedPreKeyB64,
       signature: signatureB64,
     },
     oneTimePreKeys,
   };
 
-  // 3. Отправка
+  // 4. Отправка
   await httpClient.post('/api/e2e/bundle', payload);
 };
 
@@ -188,7 +226,6 @@ const prepareSession = async (recipientId) => {
 
 const encryptMessage = async (recipientId, text) => {
   await ensureIdentity();
-  // Убрали await init() чтобы избежать цикличности
   const { store, address } = await prepareSession(recipientId);
   const cipher = new SessionCipher(store, address);
   const result = await cipher.encrypt(new TextEncoder().encode(text));
@@ -219,13 +256,12 @@ const decryptMessage = async (senderId, ciphertext, cipherType) => {
 
 // --- SAFE INIT FUNCTION ---
 const init = async () => {
-  // 1. ПРОВЕРКА НАЛИЧИЯ
+  // 1. Загрузка данных
   const identity = await storage.getItem('identityKey');
   const signedPreKey = await storage.getItem('signedPreKey');
   const registrationId = await storage.getItem('registrationId');
   const oneTimePreKeys = (await storage.getItem('oneTimePreKeys')) || [];
 
-  // Если данных нет совсем — генерируем
   if (!identity || !signedPreKey || !registrationId) {
     console.log('E2E: No local identity found. Generating new...');
     await resetIdentity();
@@ -237,7 +273,7 @@ const init = async () => {
   let parsedSignature;
   let parsedPrivKey;
 
-  // 2. БЛОК ЦЕЛОСТНОСТИ ДАННЫХ
+  // 2. Целостность данных
   try {
     const store = getStore();
     parsedIdentity = deserializeKeyPair(identity);
@@ -270,7 +306,7 @@ const init = async () => {
     return;
   }
 
-  // 3. СИНХРОНИЗАЦИЯ С СЕРВЕРОМ
+  // 3. Синхронизация (Safe Retry)
   const syncWithServer = async (retryCount = 0) => {
     try {
       console.log(`E2E: Attempting server sync (attempt ${retryCount + 1})...`);
@@ -290,11 +326,8 @@ const init = async () => {
     } catch (networkError) {
       console.warn('E2E: Server sync failed.', networkError.message);
       
-      // Если 400 - это не ошибка сети, а ошибка данных. Ретрай не поможет.
       if (networkError.response?.status === 400) {
           console.error('E2E: Server rejected keys (400 Bad Request). Data format mismatch.');
-          // В этом крайнем случае имеет смысл сбросить, так как локальные данные несовместимы с сервером
-          // Но чтобы не уйти в бесконечный цикл, делаем это аккуратно или просто останавливаемся.
           return;
       }
 
