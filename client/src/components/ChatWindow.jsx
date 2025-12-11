@@ -7,6 +7,7 @@ import { formatMessageDate } from '../utils/dateUtils';
 import * as attachmentsApi from '../api/attachmentsApi';
 import { decryptFile, encryptFile } from '../e2e/attachmentCrypto';
 import signalManager from '../e2e/signalManager';
+import httpClient from '../api/httpClient';
 
 const getParticipantId = (p) => {
   if (!p) return null;
@@ -34,6 +35,16 @@ const getParticipantId = (p) => {
 };
 
 const getMessageId = (m) => m?.id || m?._id || null;
+
+const ensureRecipientBundle = async (recipientId) => {
+  try {
+    await httpClient.get(`/api/e2e/bundle/${recipientId}`);
+    return true;
+  } catch (error) {
+    if (error.response?.status === 404) return false;
+    return true; // Assume network error, let Signal handle it
+  }
+};
 
 const isImageMime = (mimeType) => typeof mimeType === 'string' && mimeType.startsWith('image/');
 
@@ -572,6 +583,17 @@ const ChatWindow = ({
 
     const rateLimitDate = rateLimitedUntil ? new Date(rateLimitedUntil) : null;
     if (rateLimitDate && rateLimitDate.getTime() > Date.now()) return;
+
+    if (chatType === 'direct' && otherUserId) {
+      const hasBundle = await ensureRecipientBundle(otherUserId);
+      if (!hasBundle) {
+        // eslint-disable-next-line no-alert
+        alert(
+          `Ошибка: Получатель (${chat.otherUser?.username || 'пользователь'}) еще не создал ключи шифрования. Попросите его войти в приложение.`
+        );
+        return;
+      }
+    }
 
     setUnreadSeparatorMessageId(null);
     setSeparatorCleared(true);

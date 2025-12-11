@@ -160,13 +160,16 @@ const forceUpdateSession = async (recipientId) => {
   try {
     const address = getAddress(recipientId);
     const store = getStore();
-    console.log('Force updating session for', recipientId);
-    // 1. Удаляем локальную сессию
-    await store.remove(`session${address.toString()}`);
-    // 2. Запрашиваем новые ключи с сервера
+    console.log('Signal: Force updating session for', recipientId);
+    
+    const addrString = address.toString();
+    // FIX: Remove BOTH session and identity key to force fresh fetch
+    await store.remove('session' + addrString);
+    await store.remove('identityKey' + addrString); 
+    
     await prepareSession(recipientId);
   } catch (e) {
-    console.error('Force update failed:', e);
+    console.error('Signal: Force update failed', e);
     throw e;
   }
 };

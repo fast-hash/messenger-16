@@ -71,11 +71,19 @@ const parseAttachmentPayload = (text) => {
     const parsed = JSON.parse(text || '');
     if (!parsed || parsed.type !== 'file') return null;
 
-    const files = Array.isArray(parsed.files) ? parsed.files : [parsed];
+    const files = Array.isArray(parsed.files) ? parsed.files : [];
+    
+    // Validate required fields
+    const validFiles = files.filter((file) =>
+      file && file.key && file.iv && (file.id || file.attachmentId || file.url)
+    );
+
+    if (validFiles.length === 0) return null;
+
     return {
       message: parsed.message || '',
-      files: files.map((file) => ({
-        id: file.id || file.attachmentId || normalizeParticipantId(file.attachmentId) || null,
+      files: validFiles.map((file) => ({
+        id: file.id || normalizeParticipantId(file.attachmentId),
         url: file.url,
         key: file.key,
         iv: file.iv,
@@ -84,7 +92,7 @@ const parseAttachmentPayload = (text) => {
       })),
     };
   } catch (error) {
-    return null;
+    return null; // Not a file payload
   }
 };
 

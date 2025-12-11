@@ -47,19 +47,27 @@ const unlinkAttachments = async (attachmentIds) => {
 };
 
 const toMessageDto = (messageDoc, text) => {
-  const sender = messageDoc.sender || {};
-  const senderDto = sender._id
-    ? {
-        id: sender._id.toString(),
-        displayName: sender.displayName,
-        username: sender.username,
-        role: sender.role,
-        department: sender.department,
-        email: sender.email,
-      }
-    : { id: sender.toString() };
+  let senderIdStr = null;
+  let senderDto = {};
 
-  const deletedById = messageDoc.deletedBy ? messageDoc.deletedBy.toString() : null;
+  // Robustly extract senderId
+  if (messageDoc.sender) {
+    if (messageDoc.sender._id) {
+      senderIdStr = messageDoc.sender._id.toString();
+      senderDto = {
+        id: senderIdStr,
+        displayName: messageDoc.sender.displayName,
+        username: messageDoc.sender.username,
+        role: messageDoc.sender.role,
+        department: messageDoc.sender.department,
+        email: messageDoc.sender.email,
+      };
+    } else {
+      senderIdStr = messageDoc.sender.toString();
+      senderDto = { id: senderIdStr };
+    }
+  }
+
   const attachmentsList = Array.isArray(messageDoc.attachments) ? messageDoc.attachments : [];
   const attachmentsDto = messageDoc.deletedForAll
     ? []
@@ -69,12 +77,13 @@ const toMessageDto = (messageDoc, text) => {
         mimeType: attachment.mimeType,
         size: attachment.size,
         status: attachment.status,
+        isEncrypted: attachment.isEncrypted, // Pass this flag to client
       }));
 
   return {
     id: messageDoc._id.toString(),
     chatId: messageDoc.chat.toString(),
-    senderId: senderDto.id,
+    senderId: senderIdStr, // CRITICAL FIX: Always a string
     sender: senderDto,
     text: messageDoc.deletedForAll ? null : text,
     ciphertext: messageDoc.ciphertext || null,
@@ -84,11 +93,10 @@ const toMessageDto = (messageDoc, text) => {
       userId: reaction.userId ? reaction.userId.toString() : null,
     })),
     createdAt: messageDoc.createdAt ? messageDoc.createdAt.toISOString() : new Date().toISOString(),
-    createdAtMs: messageDoc.createdAt ? messageDoc.createdAt.getTime() : Date.now(),
     mentions: (messageDoc.mentions || []).map((id) => id.toString()),
     deletedForAll: !!messageDoc.deletedForAll,
     deletedAt: messageDoc.deletedAt,
-    deletedBy: deletedById,
+    deletedBy: messageDoc.deletedBy ? messageDoc.deletedBy.toString() : null,
     attachments: attachmentsDto,
   };
 };
