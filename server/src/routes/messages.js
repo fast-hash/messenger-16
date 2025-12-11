@@ -41,6 +41,12 @@ router.post(
       attachments,
     });
 
+    const normalizeId = (value) => (value && typeof value.toString === 'function' ? value.toString() : value);
+    const normalizedMessage = {
+      ...message,
+      senderId: normalizeId(message?.senderId),
+    };
+
     // Если messageService уже эмитит событие сам — этот блок можно удалить,
     // но сейчас он безопасный: при отсутствии io просто пропустится.
     const io = getIo();
@@ -49,12 +55,12 @@ router.post(
       if (emitChatId) {
         io.to(`chat:${emitChatId}`).emit('message:new', {
           chatId: emitChatId,
-          message,
+          message: normalizedMessage,
         });
       }
     }
 
-    res.json(message);
+    res.json(normalizedMessage);
   })
 );
 

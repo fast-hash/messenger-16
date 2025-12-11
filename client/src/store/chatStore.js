@@ -458,6 +458,10 @@ export const useChatStore = create((set, get) => ({
       ? normalizeParticipantId(chat?.otherUser?.id || chat?.otherUser?._id || fallbackParticipant)
       : null;
 
+    if (isDirect && !otherUserId) {
+      throw new Error('Невозможно отправить сообщение: получатель недоступен');
+    }
+
     let payload = { chatId, text, mentions, attachments };
 
     if (isDirect && otherUserId) {
