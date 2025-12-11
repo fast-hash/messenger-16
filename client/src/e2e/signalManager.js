@@ -155,25 +155,6 @@ const prepareSession = async (recipientId) => {
   return { store, address };
 };
 
-// Функция для сброса сломанной сессии и загрузки новых ключей
-const forceUpdateSession = async (recipientId) => {
-  try {
-    const address = getAddress(recipientId);
-    const store = getStore();
-    console.log('Signal: Force updating session for', recipientId);
-    
-    const addrString = address.toString();
-    // FIX: Remove BOTH session and identity key to force fresh fetch
-    await store.remove('session' + addrString);
-    await store.remove('identityKey' + addrString); 
-    
-    await prepareSession(recipientId);
-  } catch (e) {
-    console.error('Signal: Force update failed', e);
-    throw e;
-  }
-};
-
 const encryptMessage = async (recipientId, text) => {
   await ensureIdentity();
   await init();
@@ -207,20 +188,20 @@ const decryptMessage = async (senderId, ciphertext, cipherType) => {
 };
 
 const init = async () => {
-  // 1. Загружаем ключи
+  // 1. Load keys from local storage
   const identity = await storage.getItem('identityKey');
   const signedPreKey = await storage.getItem('signedPreKey');
-  const oneTimePreKeys = (await storage.getItem('oneTimePreKeys')) || [];
   const registrationId = await storage.getItem('registrationId');
+  const oneTimePreKeys = (await storage.getItem('oneTimePreKeys')) || [];
 
-  // 2. Если ключей нет - создаем
+  // 2. If keys are missing locally -> Generate new
   if (!identity || !signedPreKey || !registrationId) {
     console.log('E2E: No local identity. Generating new...');
     await resetIdentity();
     return;
   }
 
-  // 3. Если есть - загружаем в память
+  // 3. If keys exist -> Load into Memory AND Force Publish to Server
   try {
     const store = getStore();
     const deserializedIdentity = deserializeKeyPair(identity);
@@ -228,9 +209,7 @@ const init = async () => {
     const signedPrivKey = base64ToArrayBuffer(signedPreKey.keyPair.privateKey);
     const signature = base64ToArrayBuffer(signedPreKey.signature);
 
-    if (!signedPubKey || !signedPrivKey || !signature) {
-      throw new Error('Invalid signed pre-key data');
-    }
+    if (!signedPubKey || !signedPrivKey || !signature) throw new Error('Invalid key data');
 
     await store.put('identityKey', deserializedIdentity);
     await store.put('registrationId', registrationId);
@@ -243,20 +222,15 @@ const init = async () => {
     await Promise.all(
       oneTimePreKeys.map((pk) => {
         const pubKey = base64ToArrayBuffer(pk.publicKey);
-        if (!pubKey) throw new Error('Invalid one-time pre-key');
-        return store.put(`preKey${pk.keyId}`, {
-          pubKey,
-          privKey: null,
-        });
+        return store.put(`preKey${pk.keyId}`, { pubKey, privKey: null });
       })
     );
 
-    // 4. ГЛАВНОЕ: Всегда отправляем ключи на сервер при старте.
-    // Это чинит проблему, когда базу очистили, а клиент "помнит" ключи.
-    console.log('E2E: Verifying/Updating server bundle...');
+    // CRITICAL FIX: Always re-publish to server to fix "Bundle not found" after server wipes
+    console.log('E2E: Syncing bundle with server...');
     await publishBundle({
         registrationId,
-        identityKeyPair: { publicKey: base64ToArrayBuffer(identity.publicKey) },
+        identityKeyPair: { publicKey: base64ToArrayBuffer(identity.publicKey) }, 
         signedPreKey: {
             keyId: signedPreKey.keyId,
             publicKey: signedPubKey,
@@ -264,14 +238,27 @@ const init = async () => {
         },
         oneTimePreKeys: oneTimePreKeys 
     });
-    console.log('E2E: Bundle synced with server successfully.');
+    console.log('E2E: Sync complete.');
 
   } catch (error) {
-    console.warn('Signal init/sync failed. Data corrupted? Resetting identity...', error);
-    // Если локальные данные битые - сбрасываем
-    if (error.message && (error.message.includes('base64') || error.message.includes('Invalid') || error.message.includes('keypair'))) {
-       await resetIdentity();
-    }
+    console.error('Signal init failed. Data corrupted? Resetting...', error);
+    await resetIdentity();
+  }
+};
+
+// NEW: Deep cleanup for broken sessions
+const forceUpdateSession = async (recipientId) => {
+  try {
+    const address = getAddress(recipientId);
+    const store = getStore();
+    console.log('Signal: Force updating session for', recipientId);
+    // Remove BOTH session and identity key to force a clean handshake
+    await store.remove('session' + address.toString());
+    await store.remove('identityKey' + address.toString()); 
+    await prepareSession(recipientId);
+  } catch (e) {
+    console.error('Force update failed:', e);
+    throw e;
   }
 };
 

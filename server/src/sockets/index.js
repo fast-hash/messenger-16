@@ -10,6 +10,7 @@ const onlineUsers = new Map();
 const activeCalls = new Map();
 
 const getUserRoom = (userId) => `user:${userId}`;
+const normalizeId = (value) => (value && typeof value.toString === 'function' ? value.toString() : value);
 
 const isUserBusy = (userId) => {
   const idStr = userId.toString();
@@ -226,7 +227,12 @@ const setupSockets = (httpServer) => {
           attachments,
         });
 
-        io.to(`chat:${chatId}`).emit('message:new', { message });
+        const normalizedMessage = {
+          ...message,
+          senderId: normalizeId(message.senderId),
+        };
+
+        io.to(`chat:${chatId}`).emit('message:new', { message: normalizedMessage });
         if (callback) {
           callback({ ok: true });
         }
