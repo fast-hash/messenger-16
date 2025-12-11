@@ -17,7 +17,11 @@ const errorHandler = require('./middleware/error');
 
 const app = express();
 
-app.use(helmet());
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  })
+);
 app.use(
   cors({
     origin: config.corsOrigin,
