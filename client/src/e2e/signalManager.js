@@ -205,11 +205,14 @@ const init = async () => {
   try {
     const store = getStore();
     const deserializedIdentity = deserializeKeyPair(identity);
+    const identityPublicKey = base64ToArrayBuffer(identity.publicKey);
     const signedPubKey = base64ToArrayBuffer(signedPreKey.keyPair.publicKey);
     const signedPrivKey = base64ToArrayBuffer(signedPreKey.keyPair.privateKey);
     const signature = base64ToArrayBuffer(signedPreKey.signature);
 
-    if (!signedPubKey || !signedPrivKey || !signature) throw new Error('Invalid key data');
+    if (!identityPublicKey || !signedPubKey || !signedPrivKey || !signature) {
+      throw new Error('Invalid key data');
+    }
 
     await store.put('identityKey', deserializedIdentity);
     await store.put('registrationId', registrationId);
@@ -222,26 +225,62 @@ const init = async () => {
     await Promise.all(
       oneTimePreKeys.map((pk) => {
         const pubKey = base64ToArrayBuffer(pk.publicKey);
+        if (!pubKey) throw new Error('Invalid one-time pre-key');
         return store.put(`preKey${pk.keyId}`, { pubKey, privKey: null });
       })
     );
 
-    // CRITICAL FIX: Always re-publish to server to fix "Bundle not found" after server wipes
-    console.log('E2E: Syncing bundle with server...');
-    await publishBundle({
+    // Sync with the server, but avoid nuking local keys on transient network failures.
+    try {
+      console.log('E2E: Syncing bundle with server...');
+      await publishBundle({
         registrationId,
-        identityKeyPair: { publicKey: base64ToArrayBuffer(identity.publicKey) }, 
+        identityKeyPair: { publicKey: identityPublicKey },
         signedPreKey: {
-            keyId: signedPreKey.keyId,
-            publicKey: signedPubKey,
-            signature: signature
+          keyId: signedPreKey.keyId,
+          publicKey: signedPubKey,
+          signature,
         },
-        oneTimePreKeys: oneTimePreKeys 
-    });
-    console.log('E2E: Sync complete.');
+        oneTimePreKeys,
+      });
+      console.log('E2E: Sync complete.');
+    } catch (syncError) {
+      const status = syncError?.response?.status;
+      const message = syncError?.message || '';
+      const isNetworkError =
+        !syncError.response ||
+        (status && status >= 500) ||
+        /Network Error/i.test(message) ||
+        /timeout/i.test(message);
 
+      if (isNetworkError) {
+        // Network issues should not wipe user keys; allow app to continue and retry later.
+        console.warn(
+          'E2E: Server sync failed due to network issues. Using local keys and scheduling retry...',
+          syncError
+        );
+        setTimeout(() => {
+          publishBundle({
+            registrationId,
+            identityKeyPair: { publicKey: identityPublicKey },
+            signedPreKey: {
+              keyId: signedPreKey.keyId,
+              publicKey: signedPubKey,
+              signature,
+            },
+            oneTimePreKeys,
+          }).catch((err) =>
+            console.warn('E2E: Retry of bundle publish failed. Local keys remain valid.', err)
+          );
+        }, 5000);
+      } else {
+        // Unexpected errors are logged but do not reset identity to prevent data loss.
+        console.error('E2E: Server sync failed. Local keys retained.', syncError);
+      }
+    }
   } catch (error) {
-    console.error('Signal init failed. Data corrupted? Resetting...', error);
+    // Only reset identity when local data is corrupted; avoid losing keys for network issues.
+    console.error('Signal init failed while loading local keys. Resetting identity...', error);
     await resetIdentity();
   }
 };
